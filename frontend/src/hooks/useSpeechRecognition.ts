@@ -79,9 +79,17 @@ export function useSpeechRecognition(): UseSpeechRecognitionReturn {
         const formData = new FormData();
         formData.append('file', audioBlob, 'recording.webm');
 
+        // Get token from localStorage
+        const token = typeof window !== 'undefined' ? localStorage.getItem('access_token') : null;
+        const headers: HeadersInit = {};
+        if (token) {
+            headers['Authorization'] = `Bearer ${token}`;
+        }
+
         try {
             const response = await fetch(`${API_BASE_URL}/api/v1/interview/transcribe`, {
                 method: 'POST',
+                headers: headers,
                 body: formData,
             });
 

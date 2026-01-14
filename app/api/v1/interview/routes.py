@@ -33,11 +33,12 @@ router = APIRouter()
 @router.post("/transcribe")
 async def transcribe_audio(
     file: UploadFile = File(...),
+    user: CurrentStudent = Depends(),  # Require auth
 ):
     """
     Transcribe audio to text using Whisper.
     Works over HTTP - no HTTPS required.
-    Public endpoint - no auth required.
+    Requires authentication.
     """
     ai_service = get_ai_service()
     
