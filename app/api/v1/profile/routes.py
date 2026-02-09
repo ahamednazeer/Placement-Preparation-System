@@ -2,15 +2,17 @@
 Profile API routes.
 Handles student profile and resume management.
 """
-from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File
+from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, BackgroundTasks
 from fastapi.responses import FileResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.infrastructure.database.session import get_db_session
+from app.infrastructure.database.session import get_db_session, get_db_context
 from app.application.services.profile_service import ProfileService
 from app.application.services.resume_service import ResumeService
+from app.application.services.resume_analysis_service import ResumeAnalysisService
 from app.dependencies import CurrentStudent
 from app.core.constants import ALLOWED_RESUME_EXTENSIONS, MAX_RESUME_SIZE_MB
+from app.utils.logger import logger
 from .schemas import (
     ProfileUpdateRequest,
     AddSkillRequest,
@@ -19,6 +21,8 @@ from .schemas import (
     ProfileStatusResponse,
     ResumeResponse,
     ResumeUploadResponse,
+    ResumeAnalysisResponse,
+    ResumeProjectHintsResponse,
     MessageResponse,
 )
 
@@ -213,6 +217,7 @@ async def get_resume(
 )
 async def upload_resume(
     user: CurrentStudent,
+    background_tasks: BackgroundTasks,
     file: UploadFile = File(..., description="Resume file (PDF or DOCX)"),
     db: AsyncSession = Depends(get_db_session),
 ):
@@ -239,6 +244,9 @@ async def upload_resume(
     
     # Get resume info for response
     resume_info = await resume_service.get_resume_info(user.id)
+
+    # Trigger resume analysis in background
+    background_tasks.add_task(_analyze_resume_task, user.id)
     
     return ResumeUploadResponse(
         success=True,
@@ -300,3 +308,75 @@ async def download_resume(
         filename=resume.original_filename if resume else "resume.pdf",
         media_type="application/octet-stream",
     )
+
+
+async def _analyze_resume_task(user_id: str) -> None:
+    """Background task to analyze resume."""
+    try:
+        async with get_db_context() as session:
+            service = ResumeAnalysisService(session)
+            await service.analyze_and_store(user_id)
+    except Exception as e:
+        logger.error(f"Background resume analysis failed for user {user_id}: {e}")
+
+
+@router.post(
+    "/resume/analyze",
+    response_model=ResumeAnalysisResponse,
+    summary="Analyze resume",
+    description="Run AI analysis on the latest uploaded resume.",
+)
+async def analyze_resume(
+    user: CurrentStudent,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Analyze the latest resume and store results."""
+    service = ResumeAnalysisService(db)
+    try:
+        analysis = await service.analyze_and_store(user.id)
+        await db.commit()
+        return ResumeAnalysisResponse(**service.to_dict(analysis))
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+
+
+@router.get(
+    "/resume/analysis",
+    response_model=ResumeAnalysisResponse,
+    summary="Get resume analysis",
+    description="Get the latest resume analysis results.",
+)
+async def get_resume_analysis(
+    user: CurrentStudent,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Get latest resume analysis."""
+    service = ResumeAnalysisService(db)
+    analysis = await service.get_latest_analysis(user.id)
+    if not analysis:
+        # If analysis doesn't exist yet but resume does, run analysis on demand
+        try:
+            analysis = await service.analyze_and_store(user.id)
+            await db.commit()
+        except ValueError as e:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
+    return ResumeAnalysisResponse(**service.to_dict(analysis))
+
+
+@router.get(
+    "/resume/projects",
+    response_model=ResumeProjectHintsResponse,
+    summary="Get resume project hints",
+    description="Extract project titles from the uploaded resume text.",
+)
+async def get_resume_projects(
+    user: CurrentStudent,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Extract project hints directly from resume text."""
+    service = ResumeAnalysisService(db)
+    resume_text = await service.get_resume_text(user.id)
+    if not resume_text:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No resume uploaded")
+    projects = await service.get_resume_project_hints(user.id, resume_text=resume_text)
+    return ResumeProjectHintsResponse(projects=projects, source="resume_text")

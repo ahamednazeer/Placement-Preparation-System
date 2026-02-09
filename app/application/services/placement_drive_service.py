@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.infrastructure.repositories.placement_drive_repo_impl import PlacementDriveRepositoryImpl
 from app.infrastructure.repositories.drive_application_repo_impl import DriveApplicationRepositoryImpl
+from app.infrastructure.repositories.profile_repo_impl import ProfileRepositoryImpl
 from app.infrastructure.database.models import PlacementDrive, DriveApplication, StudentProfile
 from app.core.constants import PlacementDriveStatus, ApplicationStatus
 from app.utils.helpers import to_naive_utc
@@ -20,6 +21,7 @@ class PlacementDriveService:
         self.db = db
         self.drive_repo = PlacementDriveRepositoryImpl(db)
         self.app_repo = DriveApplicationRepositoryImpl(db)
+        self.profile_repo = ProfileRepositoryImpl(db)
     
     async def create_drive(
         self,
@@ -64,6 +66,19 @@ class PlacementDriveService:
         offset = (page - 1) * page_size
         drives = await self.drive_repo.list_drives(status=st, limit=page_size, offset=offset)
         total = await self.drive_repo.count_drives(status=st)
+        # Auto-complete drives past their drive date
+        now = datetime.utcnow()
+        updated = False
+        for drive in drives:
+            if drive.status in [PlacementDriveStatus.UPCOMING, PlacementDriveStatus.ONGOING] and drive.drive_date < now:
+                drive.status = PlacementDriveStatus.COMPLETED
+                updated = True
+        if updated:
+            await self.db.commit()
+            # Re-filter if caller requested a specific status
+            if st:
+                drives = [d for d in drives if d.status == st]
+                total = await self.drive_repo.count_drives(status=st)
         return drives, total
     
     async def update_drive(self, drive_id: str, **kwargs) -> Optional[PlacementDrive]:
@@ -100,17 +115,23 @@ class PlacementDriveService:
     def check_eligibility(self, drive: PlacementDrive, profile: StudentProfile) -> Tuple[bool, str]:
         """Check if student is eligible for a drive."""
         # Check CGPA
-        if drive.min_cgpa and profile.cgpa:
+        if drive.min_cgpa is not None:
+            if profile.cgpa is None:
+                return False, "CGPA is required to apply for this drive"
             if profile.cgpa < drive.min_cgpa:
                 return False, f"Minimum CGPA required: {drive.min_cgpa}"
         
         # Check department
-        if drive.allowed_departments and profile.department:
+        if drive.allowed_departments:
+            if not profile.department:
+                return False, "Department is required to apply for this drive"
             if profile.department not in drive.allowed_departments:
                 return False, f"Not open to {profile.department} department"
         
         # Check graduation year
-        if drive.allowed_graduation_years and profile.graduation_year:
+        if drive.allowed_graduation_years:
+            if not profile.graduation_year:
+                return False, "Graduation year is required to apply for this drive"
             if profile.graduation_year not in drive.allowed_graduation_years:
                 return False, f"Not open to {profile.graduation_year} batch"
         
@@ -132,6 +153,14 @@ class PlacementDriveService:
         if datetime.utcnow() > drive.registration_deadline:
             raise ValueError("Registration deadline has passed")
         
+        # Check eligibility using student profile
+        profile = await self.profile_repo.get_by_user_id(user_id)
+        if not profile:
+            raise ValueError("Complete your profile before applying to drives")
+        eligible, reason = self.check_eligibility(drive, profile)
+        if not eligible:
+            raise ValueError(reason)
+
         # Check if already applied
         existing = await self.app_repo.get_by_user_and_drive(user_id, drive_id)
         if existing:

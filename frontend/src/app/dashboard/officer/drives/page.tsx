@@ -10,12 +10,13 @@ import {
     CircleNotch,
     Buildings,
     MapPin,
-    CurrencyDollar,
+    CurrencyInr,
     Calendar,
     Users,
     Eye,
     Check,
     XCircle,
+    DownloadSimple,
 } from '@phosphor-icons/react';
 import { api, PlacementDrive, DriveStatsResponse, Applicant } from '@/lib/api';
 import { useCapacitor } from '@/components/CapacitorProvider';
@@ -48,6 +49,7 @@ export default function DrivesManagementPage() {
     const [selectedDrive, setSelectedDrive] = useState<PlacementDrive | null>(null);
     const [applicants, setApplicants] = useState<Applicant[]>([]);
     const [loadingApplicants, setLoadingApplicants] = useState(false);
+    const [exporting, setExporting] = useState(false);
 
     const [formData, setFormData] = useState({
         company_name: '',
@@ -61,11 +63,19 @@ export default function DrivesManagementPage() {
         job_type: 'Full-time',
         allowed_departments: '',
         max_applications: '',
+        aptitude_test_required: true,
+        aptitude_question_count: '10',
+        aptitude_difficulty: 'MEDIUM',
+        aptitude_pass_percentage: '60',
+        technical_test_required: true,
+        technical_question_count: '10',
+        technical_difficulty: 'MEDIUM',
+        technical_pass_percentage: '60',
     });
 
     const fetchDrives = useCallback(async () => {
         try {
-            const data = await api.getDrives(statusFilter || undefined);
+            const data = await api.listDrives({ status: statusFilter || undefined });
             setDrives(data.drives);
             setTotal(data.total);
         } catch (error) {
@@ -112,6 +122,14 @@ export default function DrivesManagementPage() {
             job_type: 'Full-time',
             allowed_departments: '',
             max_applications: '',
+            aptitude_test_required: true,
+            aptitude_question_count: '10',
+            aptitude_difficulty: 'MEDIUM',
+            aptitude_pass_percentage: '60',
+            technical_test_required: true,
+            technical_question_count: '10',
+            technical_difficulty: 'MEDIUM',
+            technical_pass_percentage: '60',
         });
         setEditingDrive(null);
     };
@@ -137,26 +155,106 @@ export default function DrivesManagementPage() {
             job_type: drive.job_type || 'Full-time',
             allowed_departments: drive.allowed_departments?.join(', ') || '',
             max_applications: drive.max_applications?.toString() || '',
+            aptitude_test_required: drive.aptitude_test_required ?? true,
+            aptitude_question_count: (drive.aptitude_question_count ?? 10).toString(),
+            aptitude_difficulty: drive.aptitude_difficulty || 'MEDIUM',
+            aptitude_pass_percentage: (drive.aptitude_pass_percentage ?? 60).toString(),
+            technical_test_required: drive.technical_test_required ?? true,
+            technical_question_count: (drive.technical_question_count ?? 10).toString(),
+            technical_difficulty: drive.technical_difficulty || 'MEDIUM',
+            technical_pass_percentage: (drive.technical_pass_percentage ?? 60).toString(),
         });
         setShowModal(true);
     };
 
+    const validateForm = () => {
+        if (!formData.company_name.trim()) return 'Company name is required';
+        if (!formData.job_title.trim()) return 'Job title is required';
+        if (formData.job_description.trim().length < 10) return 'Job description must be at least 10 characters';
+        if (!formData.registration_deadline) return 'Registration deadline is required';
+        if (!formData.drive_date) return 'Drive date is required';
+
+        const regDate = new Date(formData.registration_deadline);
+        const driveDate = new Date(formData.drive_date);
+        if (Number.isNaN(regDate.getTime()) || Number.isNaN(driveDate.getTime())) {
+            return 'Please provide valid dates';
+        }
+        if (regDate >= driveDate) return 'Registration deadline must be before the drive date';
+
+        if (formData.min_cgpa) {
+            const cgpa = Number.parseFloat(formData.min_cgpa);
+            if (Number.isNaN(cgpa)) return 'Min CGPA must be a number';
+            if (cgpa < 0 || cgpa > 10) return 'Min CGPA must be between 0 and 10';
+        }
+
+        if (formData.package_lpa) {
+            const pkg = Number.parseFloat(formData.package_lpa);
+            if (Number.isNaN(pkg)) return 'Package must be a number';
+        }
+
+        if (formData.max_applications) {
+            const maxApps = Number.parseInt(formData.max_applications, 10);
+            if (Number.isNaN(maxApps) || maxApps < 1) return 'Max applications must be at least 1';
+        }
+
+        if (formData.aptitude_test_required) {
+            const count = Number.parseInt(formData.aptitude_question_count, 10);
+            if (Number.isNaN(count) || count < 5 || count > 50) return 'Aptitude question count must be between 5 and 50';
+            const pass = Number.parseFloat(formData.aptitude_pass_percentage);
+            if (Number.isNaN(pass) || pass < 0 || pass > 100) return 'Aptitude pass % must be between 0 and 100';
+        }
+
+        if (formData.technical_test_required) {
+            const count = Number.parseInt(formData.technical_question_count, 10);
+            if (Number.isNaN(count) || count < 5 || count > 50) return 'Technical question count must be between 5 and 50';
+            const pass = Number.parseFloat(formData.technical_pass_percentage);
+            if (Number.isNaN(pass) || pass < 0 || pass > 100) return 'Technical pass % must be between 0 and 100';
+        }
+
+        return null;
+    };
+
     const handleSave = async () => {
         hapticImpact();
+        const validationError = validateForm();
+        if (validationError) {
+            toast.error(validationError);
+            return;
+        }
         setSaving(true);
         try {
+            const regDate = new Date(formData.registration_deadline);
+            const driveDate = new Date(formData.drive_date);
             const data = {
                 company_name: formData.company_name,
                 job_title: formData.job_title,
                 job_description: formData.job_description,
-                registration_deadline: new Date(formData.registration_deadline).toISOString(),
-                drive_date: new Date(formData.drive_date).toISOString(),
+                registration_deadline: regDate.toISOString(),
+                drive_date: driveDate.toISOString(),
                 min_cgpa: formData.min_cgpa ? parseFloat(formData.min_cgpa) : undefined,
                 package_lpa: formData.package_lpa ? parseFloat(formData.package_lpa) : undefined,
                 location: formData.location || undefined,
                 job_type: formData.job_type,
-                allowed_departments: formData.allowed_departments ? formData.allowed_departments.split(',').map(s => s.trim()) : undefined,
-                max_applications: formData.max_applications ? parseInt(formData.max_applications) : undefined,
+                allowed_departments: formData.allowed_departments
+                    ? formData.allowed_departments.split(',').map(s => s.trim()).filter(Boolean)
+                    : undefined,
+                max_applications: formData.max_applications ? parseInt(formData.max_applications, 10) : undefined,
+                aptitude_test_required: formData.aptitude_test_required,
+                aptitude_question_count: formData.aptitude_test_required
+                    ? parseInt(formData.aptitude_question_count, 10)
+                    : undefined,
+                aptitude_difficulty: formData.aptitude_test_required ? formData.aptitude_difficulty : undefined,
+                aptitude_pass_percentage: formData.aptitude_test_required
+                    ? parseFloat(formData.aptitude_pass_percentage)
+                    : undefined,
+                technical_test_required: formData.technical_test_required,
+                technical_question_count: formData.technical_test_required
+                    ? parseInt(formData.technical_question_count, 10)
+                    : undefined,
+                technical_difficulty: formData.technical_test_required ? formData.technical_difficulty : undefined,
+                technical_pass_percentage: formData.technical_test_required
+                    ? parseFloat(formData.technical_pass_percentage)
+                    : undefined,
             };
 
             if (editingDrive) {
@@ -203,6 +301,32 @@ export default function DrivesManagementPage() {
             toast.error('Failed to load applicants');
         } finally {
             setLoadingApplicants(false);
+        }
+    };
+
+    const handleExportApplicants = async () => {
+        if (!selectedDrive) return;
+        hapticImpact();
+        setExporting(true);
+        try {
+            const blob = await api.exportDriveApplicants(selectedDrive.id);
+            const url = window.URL.createObjectURL(blob);
+            const safeName = `${selectedDrive.company_name}-${selectedDrive.job_title}`
+                .replace(/[^a-z0-9]+/gi, '_')
+                .replace(/^_+|_+$/g, '')
+                .toLowerCase() || 'drive_applicants';
+            const link = document.createElement('a');
+            link.href = url;
+            link.download = `${safeName}.xlsx`;
+            document.body.appendChild(link);
+            link.click();
+            link.remove();
+            window.URL.revokeObjectURL(url);
+            toast.success('Applicants exported');
+        } catch (error: any) {
+            toast.error(error?.message || 'Failed to export applicants');
+        } finally {
+            setExporting(false);
         }
     };
 
@@ -294,7 +418,7 @@ export default function DrivesManagementPage() {
                                     </div>
                                     <p className="text-sm text-slate-400">{drive.job_title}</p>
                                     <div className="flex items-center gap-3 mt-2 text-xs text-slate-500">
-                                        {drive.package_lpa && <span className="flex items-center gap-1"><CurrencyDollar size={12} />{drive.package_lpa} LPA</span>}
+                                        {drive.package_lpa && <span className="flex items-center gap-1"><CurrencyInr size={12} />{drive.package_lpa} LPA</span>}
                                         {drive.location && <span className="flex items-center gap-1"><MapPin size={12} />{drive.location}</span>}
                                         <span className="flex items-center gap-1"><Users size={12} />{drive.application_count} apps</span>
                                     </div>
@@ -403,6 +527,105 @@ export default function DrivesManagementPage() {
                                         <input type="text" value={formData.allowed_departments} onChange={(e) => setFormData({ ...formData, allowed_departments: e.target.value })} className="input-modern h-10" placeholder="CSE, ECE, IT" />
                                     </div>
 
+                                    <div className="border border-slate-800/60 rounded-sm p-3 space-y-3">
+                                        <p className="text-[10px] uppercase text-slate-400">Assessment Rules</p>
+                                        <label className="flex items-center gap-2 text-xs text-slate-300">
+                                            <input
+                                                type="checkbox"
+                                                checked={formData.aptitude_test_required}
+                                                onChange={(e) => setFormData({ ...formData, aptitude_test_required: e.target.checked })}
+                                                className="h-4 w-4"
+                                            />
+                                            Aptitude Test Required
+                                        </label>
+                                        {formData.aptitude_test_required && (
+                                            <div className="grid grid-cols-3 gap-3">
+                                                <div>
+                                                    <label className="text-[10px] text-slate-500 uppercase mb-1 block">Count</label>
+                                                    <input
+                                                        type="number"
+                                                        min={5}
+                                                        max={50}
+                                                        value={formData.aptitude_question_count}
+                                                        onChange={(e) => setFormData({ ...formData, aptitude_question_count: e.target.value })}
+                                                        className="input-modern h-9"
+                                                    />
+                                                </div>
+                                                <div>
+                                                    <label className="text-[10px] text-slate-500 uppercase mb-1 block">Difficulty</label>
+                                                    <select
+                                                        value={formData.aptitude_difficulty}
+                                                        onChange={(e) => setFormData({ ...formData, aptitude_difficulty: e.target.value })}
+                                                        className="input-modern h-9"
+                                                    >
+                                                        <option value="EASY">Easy</option>
+                                                        <option value="MEDIUM">Medium</option>
+                                                        <option value="HARD">Hard</option>
+                                                    </select>
+                                                </div>
+                                                <div>
+                                                    <label className="text-[10px] text-slate-500 uppercase mb-1 block">Pass %</label>
+                                                    <input
+                                                        type="number"
+                                                        min={0}
+                                                        max={100}
+                                                        value={formData.aptitude_pass_percentage}
+                                                        onChange={(e) => setFormData({ ...formData, aptitude_pass_percentage: e.target.value })}
+                                                        className="input-modern h-9"
+                                                    />
+                                                </div>
+                                            </div>
+                                        )}
+
+                                        <label className="flex items-center gap-2 text-xs text-slate-300 mt-2">
+                                            <input
+                                                type="checkbox"
+                                                checked={formData.technical_test_required}
+                                                onChange={(e) => setFormData({ ...formData, technical_test_required: e.target.checked })}
+                                                className="h-4 w-4"
+                                            />
+                                            Technical Test Required
+                                        </label>
+                                        {formData.technical_test_required && (
+                                            <div className="grid grid-cols-3 gap-3">
+                                                <div>
+                                                    <label className="text-[10px] text-slate-500 uppercase mb-1 block">Count</label>
+                                                    <input
+                                                        type="number"
+                                                        min={5}
+                                                        max={50}
+                                                        value={formData.technical_question_count}
+                                                        onChange={(e) => setFormData({ ...formData, technical_question_count: e.target.value })}
+                                                        className="input-modern h-9"
+                                                    />
+                                                </div>
+                                                <div>
+                                                    <label className="text-[10px] text-slate-500 uppercase mb-1 block">Difficulty</label>
+                                                    <select
+                                                        value={formData.technical_difficulty}
+                                                        onChange={(e) => setFormData({ ...formData, technical_difficulty: e.target.value })}
+                                                        className="input-modern h-9"
+                                                    >
+                                                        <option value="EASY">Easy</option>
+                                                        <option value="MEDIUM">Medium</option>
+                                                        <option value="HARD">Hard</option>
+                                                    </select>
+                                                </div>
+                                                <div>
+                                                    <label className="text-[10px] text-slate-500 uppercase mb-1 block">Pass %</label>
+                                                    <input
+                                                        type="number"
+                                                        min={0}
+                                                        max={100}
+                                                        value={formData.technical_pass_percentage}
+                                                        onChange={(e) => setFormData({ ...formData, technical_pass_percentage: e.target.value })}
+                                                        className="input-modern h-9"
+                                                    />
+                                                </div>
+                                            </div>
+                                        )}
+                                    </div>
+
                                     <button onClick={handleSave} disabled={saving} className="btn-primary w-full h-12 flex items-center justify-center gap-2">
                                         {saving ? <CircleNotch size={18} className="animate-spin" /> : <CheckCircle size={18} />}
                                         {editingDrive ? 'Update Drive' : 'Create Drive'}
@@ -425,9 +648,19 @@ export default function DrivesManagementPage() {
                                         <h2 className="font-bold text-lg">Applicants</h2>
                                         <p className="text-xs text-slate-500">{selectedDrive.company_name} - {selectedDrive.job_title}</p>
                                     </div>
-                                    <button onClick={() => { hapticImpact(); setShowApplicants(false); }} className="w-8 h-8 bg-slate-700 rounded-full flex items-center justify-center">
-                                        <X size={16} />
-                                    </button>
+                                    <div className="flex items-center gap-2">
+                                        <button
+                                            onClick={handleExportApplicants}
+                                            disabled={exporting}
+                                            className={`h-9 px-3 text-[10px] uppercase rounded-sm font-medium tracking-wide flex items-center gap-2 ${exporting ? 'bg-slate-800 text-slate-500' : 'bg-blue-500/20 text-blue-300 hover:bg-blue-500/30'}`}
+                                        >
+                                            {exporting ? <CircleNotch size={14} className="animate-spin" /> : <DownloadSimple size={14} />}
+                                            Export
+                                        </button>
+                                        <button onClick={() => { hapticImpact(); setShowApplicants(false); }} className="w-8 h-8 bg-slate-700 rounded-full flex items-center justify-center">
+                                            <X size={16} />
+                                        </button>
+                                    </div>
                                 </div>
 
                                 {loadingApplicants ? (
@@ -442,6 +675,23 @@ export default function DrivesManagementPage() {
                                                     <div>
                                                         <p className="font-medium">{app.user_name}</p>
                                                         <p className="text-xs text-slate-500">{app.user_email}</p>
+                                                        <div className="flex flex-wrap gap-2 mt-2 text-[10px] text-slate-500">
+                                                            {app.user_phone && <span>Phone: {app.user_phone}</span>}
+                                                            {app.register_number && <span>Reg#: {app.register_number}</span>}
+                                                            {app.department && <span>Dept: {app.department}</span>}
+                                                            {app.graduation_year && <span>Batch: {app.graduation_year}</span>}
+                                                            {app.cgpa !== undefined && app.cgpa !== null && <span>CGPA: {app.cgpa}</span>}
+                                                        </div>
+                                                        {(app.aptitude_status || app.technical_status) && (
+                                                            <div className="flex flex-wrap gap-2 mt-2 text-[10px] text-slate-500">
+                                                                {app.aptitude_status && (
+                                                                    <span>Aptitude: {app.aptitude_status}{app.aptitude_score !== undefined && app.aptitude_score !== null ? ` (${app.aptitude_score}%)` : ''}</span>
+                                                                )}
+                                                                {app.technical_status && (
+                                                                    <span>Technical: {app.technical_status}{app.technical_score !== undefined && app.technical_score !== null ? ` (${app.technical_score}%)` : ''}</span>
+                                                                )}
+                                                            </div>
+                                                        )}
                                                     </div>
                                                     <span className={`text-xs px-2 py-0.5 rounded-sm ${app.status === 'SELECTED' ? 'bg-green-500/20 text-green-400' : app.status === 'REJECTED' ? 'bg-red-500/20 text-red-400' : app.status === 'SHORTLISTED' ? 'bg-yellow-500/20 text-yellow-400' : 'bg-slate-700 text-slate-400'}`}>
                                                         {app.status}

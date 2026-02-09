@@ -10,7 +10,7 @@ from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.infrastructure.database.models import PlacementDrive, DriveApplication
-from app.core.constants import PlacementDriveStatus
+from app.core.constants import PlacementDriveStatus, DifficultyLevel
 
 
 class PlacementDriveRepositoryImpl:
@@ -35,6 +35,14 @@ class PlacementDriveRepositoryImpl:
         location: Optional[str] = None,
         job_type: Optional[str] = None,
         max_applications: Optional[int] = None,
+        aptitude_test_required: bool = False,
+        aptitude_question_count: int = 10,
+        aptitude_difficulty: Optional[DifficultyLevel] = None,
+        aptitude_pass_percentage: float = 60.0,
+        technical_test_required: bool = False,
+        technical_question_count: int = 10,
+        technical_difficulty: Optional[DifficultyLevel] = None,
+        technical_pass_percentage: float = 60.0,
     ) -> PlacementDrive:
         """Create a new placement drive."""
         drive = PlacementDrive(
@@ -53,6 +61,14 @@ class PlacementDriveRepositoryImpl:
             location=location,
             job_type=job_type,
             max_applications=max_applications,
+            aptitude_test_required=aptitude_test_required,
+            aptitude_question_count=aptitude_question_count,
+            aptitude_difficulty=aptitude_difficulty,
+            aptitude_pass_percentage=aptitude_pass_percentage,
+            technical_test_required=technical_test_required,
+            technical_question_count=technical_question_count,
+            technical_difficulty=technical_difficulty,
+            technical_pass_percentage=technical_pass_percentage,
             status=PlacementDriveStatus.UPCOMING,
         )
         self.db.add(drive)
@@ -110,6 +126,14 @@ class PlacementDriveRepositoryImpl:
         location: Optional[str] = None,
         job_type: Optional[str] = None,
         max_applications: Optional[int] = None,
+        aptitude_test_required: Optional[bool] = None,
+        aptitude_question_count: Optional[int] = None,
+        aptitude_difficulty: Optional[DifficultyLevel] = None,
+        aptitude_pass_percentage: Optional[float] = None,
+        technical_test_required: Optional[bool] = None,
+        technical_question_count: Optional[int] = None,
+        technical_difficulty: Optional[DifficultyLevel] = None,
+        technical_pass_percentage: Optional[float] = None,
         status: Optional[PlacementDriveStatus] = None,
     ) -> Optional[PlacementDrive]:
         """Update a drive."""
@@ -130,6 +154,14 @@ class PlacementDriveRepositoryImpl:
         if location is not None: drive.location = location
         if job_type is not None: drive.job_type = job_type
         if max_applications is not None: drive.max_applications = max_applications
+        if aptitude_test_required is not None: drive.aptitude_test_required = aptitude_test_required
+        if aptitude_question_count is not None: drive.aptitude_question_count = aptitude_question_count
+        if aptitude_difficulty is not None: drive.aptitude_difficulty = aptitude_difficulty
+        if aptitude_pass_percentage is not None: drive.aptitude_pass_percentage = aptitude_pass_percentage
+        if technical_test_required is not None: drive.technical_test_required = technical_test_required
+        if technical_question_count is not None: drive.technical_question_count = technical_question_count
+        if technical_difficulty is not None: drive.technical_difficulty = technical_difficulty
+        if technical_pass_percentage is not None: drive.technical_pass_percentage = technical_pass_percentage
         if status is not None: drive.status = status
         
         await self.db.commit()

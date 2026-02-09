@@ -20,6 +20,8 @@ from .schemas import (
     InterviewSessionResponse,
     InterviewHistoryResponse,
     InterviewStatsResponse,
+    InterviewAnswerListResponse,
+    InterviewAnswerItem,
     session_to_response,
     session_to_summary,
 )
@@ -32,44 +34,85 @@ router = APIRouter()
 
 @router.post("/transcribe")
 async def transcribe_audio(
+    user: CurrentStudent,
     file: UploadFile = File(...),
-    user: CurrentStudent = Depends(),  # Require auth
 ):
     """
     Transcribe audio to text using Whisper.
     Works over HTTP - no HTTPS required.
     Requires authentication.
+    Accepts any audio format - converts to WAV for best accuracy.
     """
+    import subprocess
+    import logging
+    logger = logging.getLogger(__name__)
+    
     ai_service = get_ai_service()
+    content = await file.read()
+    logger.info(f"Transcribe request: filename={file.filename}, content_type={file.content_type}, size={len(content)} bytes")
     
-    # Validate file type
-    allowed_types = ["audio/webm", "audio/wav", "audio/mp3", "audio/mpeg", "audio/ogg", "audio/m4a"]
-    if file.content_type not in allowed_types:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Unsupported audio format: {file.content_type}"
-        )
+    tmp_path = None
+    wav_path = None
     
-    # Save to temp file
     try:
-        suffix = ".webm" if "webm" in file.content_type else ".wav"
+        # Determine input format
+        content_type = file.content_type or ""
+        if "webm" in content_type or "opus" in content_type:
+            suffix = ".webm"
+        elif "mp4" in content_type or "m4a" in content_type:
+            suffix = ".m4a"
+        elif "mpeg" in content_type or "mp3" in content_type:
+            suffix = ".mp3"
+        else:
+            suffix = ".webm"  # Default to webm for unknown
+        
+        # Save original audio
         with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
-            content = await file.read()
             tmp.write(content)
             tmp_path = tmp.name
         
-        # Transcribe
-        text = await ai_service.transcribe_audio(tmp_path)
+        # Convert to WAV for better Whisper accuracy (16kHz mono PCM)
+        wav_path = tmp_path.replace(suffix, ".wav")
+        try:
+            result = subprocess.run([
+                "ffmpeg", "-y", "-i", tmp_path,
+                "-ar", "16000",     # 16kHz sample rate (optimal for Whisper)
+                "-ac", "1",         # Mono
+                "-c:a", "pcm_s16le", # 16-bit PCM
+                wav_path
+            ], capture_output=True, timeout=30)
+            
+            if result.returncode == 0:
+                logger.info(f"Converted {suffix} to WAV successfully")
+                transcribe_path = wav_path
+            else:
+                logger.warning(f"FFmpeg conversion failed: {result.stderr.decode()[:200]}, using original")
+                transcribe_path = tmp_path
+        except FileNotFoundError:
+            logger.warning("FFmpeg not found, using original audio format")
+            transcribe_path = tmp_path
+        except subprocess.TimeoutExpired:
+            logger.warning("FFmpeg conversion timed out, using original")
+            transcribe_path = tmp_path
         
-        # Cleanup
-        os.unlink(tmp_path)
+        # Transcribe
+        text = await ai_service.transcribe_audio(transcribe_path)
+        logger.info(f"Transcription result: '{text[:100] if text else '(empty)'}'")
         
         return {"text": text, "success": True}
+        
     except Exception as e:
+        logger.error(f"Transcription error: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Transcription failed: {str(e)}"
         )
+    finally:
+        # Cleanup temp files
+        if tmp_path and os.path.exists(tmp_path):
+            os.unlink(tmp_path)
+        if wav_path and os.path.exists(wav_path):
+            os.unlink(wav_path)
 
 @router.post("/start", response_model=InterviewQuestionResponse)
 async def start_interview(
@@ -88,6 +131,7 @@ async def start_interview(
         session, first_question = await service.start_interview(
             user_id=user.id,
             interview_type=request.interview_type,
+            mode=request.mode,
             difficulty=request.difficulty,
             target_role=request.target_role,
             target_company=request.target_company,
@@ -231,6 +275,54 @@ async def complete_interview(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to complete interview: {str(e)}"
+        )
+
+
+@router.get("/{session_id}/answers", response_model=InterviewAnswerListResponse)
+async def get_interview_answers(
+    session_id: str,
+    user: CurrentStudent,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Get per-question interview answers for review."""
+    service = InterviewService(db)
+    try:
+        answers = await service.get_answer_review(user_id=user.id, session_id=session_id)
+        def scale(value):
+            try:
+                return round(float(value or 0) * 10, 1)
+            except Exception:
+                return 0.0
+        return InterviewAnswerListResponse(
+            session_id=session_id,
+            answers=[
+                InterviewAnswerItem(
+                    id=a.id,
+                    question_number=a.question_number,
+                    question_text=a.question_text,
+                    answer_text=a.answer_text,
+                    overall_score=scale(a.overall_score),
+                    relevance_score=scale(a.relevance_score),
+                    clarity_score=scale(a.clarity_score),
+                    depth_score=scale(a.depth_score),
+                    confidence_score=scale(a.confidence_score),
+                    feedback=a.feedback,
+                    strengths=a.strengths,
+                    improvements=a.improvements,
+                    answered_at=a.answered_at,
+                )
+                for a in answers
+            ],
+        )
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(e)
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to fetch interview answers: {str(e)}"
         )
 
 

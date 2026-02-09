@@ -4,16 +4,22 @@ Core business logic for mock interview sessions.
 """
 from datetime import datetime
 from typing import Dict, Any, List, Optional, Tuple
-import os
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.infrastructure.repositories.interview_repo_impl import InterviewRepositoryImpl
 from app.infrastructure.repositories.profile_repo_impl import ProfileRepositoryImpl
-from app.infrastructure.repositories.resume_repo_impl import ResumeRepositoryImpl
+from app.infrastructure.repositories.interview_answer_repo_impl import InterviewAnswerRepositoryImpl
 from app.application.services.ai_service import get_ai_service
+from app.application.services.resume_analysis_service import ResumeAnalysisService
 from app.infrastructure.database.models import InterviewSession
-from app.core.constants import InterviewType, DifficultyLevel, MAX_INTERVIEW_QUESTIONS
+from app.core.constants import (
+    InterviewType,
+    InterviewMode,
+    InterviewStatus,
+    DifficultyLevel,
+    MAX_INTERVIEW_QUESTIONS,
+)
 from app.utils.logger import logger
 
 
@@ -24,13 +30,15 @@ class InterviewService:
         self.session = session
         self.interview_repo = InterviewRepositoryImpl(session)
         self.profile_repo = ProfileRepositoryImpl(session)
-        self.resume_repo = ResumeRepositoryImpl(session)
+        self.answer_repo = InterviewAnswerRepositoryImpl(session)
+        self.resume_analysis_service = ResumeAnalysisService(session)
         self.ai_service = get_ai_service()
     
     async def start_interview(
         self,
         user_id: str,
         interview_type: InterviewType,
+        mode: InterviewMode,
         difficulty: DifficultyLevel,
         target_role: Optional[str] = None,
         target_company: Optional[str] = None,
@@ -45,6 +53,8 @@ class InterviewService:
         interview = await self.interview_repo.create(
             user_id=user_id,
             interview_type=interview_type,
+            mode=mode,
+            difficulty=difficulty,
             target_role=target_role,
             target_company=target_company,
         )
@@ -79,7 +89,6 @@ class InterviewService:
         user_id: str,
         session_id: str,
         answer_text: str,
-        difficulty: DifficultyLevel = DifficultyLevel.MEDIUM,
     ) -> Dict[str, Any]:
         """
         Submit an answer and get evaluation + next question.
@@ -92,7 +101,7 @@ class InterviewService:
         if not interview:
             raise ValueError("Interview session not found")
         
-        if interview.ended_at:
+        if interview.ended_at or (interview.status and interview.status != InterviewStatus.IN_PROGRESS):
             raise ValueError("Interview session already completed")
         
         conversation = list(interview.conversation) if interview.conversation else []
@@ -125,6 +134,16 @@ class InterviewService:
         current_qa["answer"] = answer_text
         current_qa["evaluation"] = evaluation
         current_qa["answered_at"] = datetime.utcnow().isoformat()
+
+        # Persist per-answer record
+        await self.answer_repo.create(
+            session_id=interview.id,
+            user_id=user_id,
+            question_number=question_number,
+            question_text=current_question,
+            answer_text=answer_text,
+            evaluation=evaluation,
+        )
         
         # Check if we should continue or complete
         is_complete = question_number >= MAX_INTERVIEW_QUESTIONS
@@ -132,9 +151,10 @@ class InterviewService:
         
         if not is_complete:
             # Generate next question
+            next_difficulty = self._normalize_difficulty(interview.difficulty)
             next_question = await self.ai_service.generate_interview_question(
                 interview_type=interview.interview_type,
-                difficulty=difficulty,
+                difficulty=next_difficulty,
                 student_context=student_context,
                 previous_qa=conversation,
                 question_number=question_number + 1,
@@ -188,36 +208,56 @@ class InterviewService:
         answered_qa = [qa for qa in conversation if qa.get("answer")]
         
         if not answered_qa:
-            # No answers, just mark as ended with zero scores
+            # No answers, mark as abandoned
             return await self.interview_repo.complete_session(
                 session_id=session_id,
                 overall_score=0,
+                technical_score=0,
+                communication_score=0,
+                confidence_score=0,
                 feedback_summary="Interview ended without completing any questions.",
+                improvement_areas=["Complete at least one question to receive feedback."],
+                status=InterviewStatus.ABANDONED,
             )
         
         # Get student context
         student_context = await self._get_student_context(user_id)
         
-        # Generate comprehensive feedback
+        # Generate comprehensive feedback (AI)
         feedback = await self.ai_service.generate_feedback_summary(
             interview_type=interview.interview_type,
             conversation=answered_qa,
             student_context=student_context,
         )
+
+        # Compute scores from evaluations (prefer stored answers)
+        answer_rows = await self.answer_repo.list_by_session(session_id)
+        evaluation_rows: List[Dict[str, Any]] = []
+        if answer_rows:
+            for row in answer_rows:
+                evaluation_rows.append({
+                    "relevance_score": row.relevance_score,
+                    "clarity_score": row.clarity_score,
+                    "depth_score": row.depth_score,
+                    "confidence_score": row.confidence_score,
+                })
+
+        score_summary = self._compute_scores(evaluation_rows or answered_qa)
         
         # Complete session with scores
         completed_interview = await self.interview_repo.complete_session(
             session_id=session_id,
-            overall_score=feedback.get("overall_score", 0),
-            technical_score=feedback.get("technical_score"),
-            communication_score=feedback.get("communication_score"),
-            confidence_score=feedback.get("confidence_score"),
+            overall_score=score_summary["overall_score"],
+            technical_score=score_summary["technical_score"],
+            communication_score=score_summary["communication_score"],
+            confidence_score=score_summary["confidence_score"],
             feedback_summary=feedback.get("overall_assessment"),
             improvement_areas=feedback.get("improvement_suggestions"),
+            status=InterviewStatus.COMPLETED,
         )
         
         # Update student's interview score in profile
-        await self._update_profile_score(user_id, feedback.get("overall_score", 0))
+        await self._update_profile_score(user_id, score_summary["overall_score"])
         
         logger.info(f"Completed interview session {session_id} with score {feedback.get('overall_score', 0)}")
         
@@ -247,6 +287,13 @@ class InterviewService:
         sessions = await self.interview_repo.list_by_user(user_id, limit=page_size, offset=offset)
         total = await self.interview_repo.count_by_user(user_id)
         return sessions, total
+
+    async def get_answer_review(self, user_id: str, session_id: str):
+        """Get per-question answer review for a session."""
+        interview = await self.interview_repo.get_by_user_and_id(user_id, session_id)
+        if not interview:
+            raise ValueError("Interview session not found")
+        return await self.answer_repo.list_by_session(session_id)
     
     async def get_user_stats(self, user_id: str) -> Dict[str, Any]:
         """Get interview statistics for user."""
@@ -258,6 +305,8 @@ class InterviewService:
             "profile": {},
             "skills": [],
             "resume_text": "",
+            "resume_score": 0,
+            "missing_skills": [],
             "aptitude_performance": {},
         }
         
@@ -279,54 +328,78 @@ class InterviewService:
                     "interview_score": profile.interview_score,
                     "coding_score": profile.coding_score,
                 }
-            
-            # Get resume content
-            resume = await self.resume_repo.get_active_by_student_id(user_id)
-            if resume and resume.file_path:
-                # Try to extract text from resume
-                context["resume_text"] = await self._extract_resume_text(resume.file_path)
+
+            # Resume analysis context (if available)
+            analysis = await self.resume_analysis_service.get_latest_analysis(user_id)
+            if analysis:
+                context["resume_score"] = analysis.resume_score or 0
+                context["missing_skills"] = analysis.missing_skills or []
+                extracted = analysis.extracted_skills or []
+                if extracted:
+                    context["skills"] = list(dict.fromkeys(context["skills"] + extracted))
+
+            # Resume text for richer context
+            resume_text = await self.resume_analysis_service.get_resume_text(user_id)
+            if resume_text:
+                context["resume_text"] = resume_text
                 
         except Exception as e:
             logger.warning(f"Failed to load student context: {e}")
         
         return context
-    
-    async def _extract_resume_text(self, file_path: str) -> str:
-        """Extract text content from resume file."""
-        try:
-            if not os.path.exists(file_path):
-                return ""
-            
-            file_ext = file_path.rsplit(".", 1)[-1].lower()
-            
-            if file_ext == "pdf":
-                # Try to extract text from PDF using pypdf
+
+    def _compute_scores(self, answered_qa: List[Dict[str, Any]]) -> Dict[str, float]:
+        """Compute overall and component scores from per-question evaluations."""
+        relevance_scores: List[float] = []
+        clarity_scores: List[float] = []
+        depth_scores: List[float] = []
+        confidence_scores: List[float] = []
+
+        for qa in answered_qa:
+            evaluation = qa.get("evaluation") if isinstance(qa, dict) and "evaluation" in qa else qa
+            if not isinstance(evaluation, dict):
+                continue
+            try:
+                relevance_scores.append(float(evaluation.get("relevance_score", 0) or 0))
+                clarity_scores.append(float(evaluation.get("clarity_score", 0) or 0))
+                depth_scores.append(float(evaluation.get("depth_score", 0) or 0))
+                confidence_scores.append(float(evaluation.get("confidence_score", 0) or 0))
+            except Exception:
+                continue
+
+        def _avg(values: List[float]) -> float:
+            return sum(values) / len(values) if values else 0.0
+
+        avg_relevance = _avg(relevance_scores)
+        avg_clarity = _avg(clarity_scores)
+        avg_depth = _avg(depth_scores)
+        avg_confidence = _avg(confidence_scores)
+
+        # Weighted overall score: Technical 50% (relevance), Clarity 30%, Depth 20%
+        overall_score = round((avg_relevance * 0.5 + avg_clarity * 0.3 + avg_depth * 0.2) * 10, 1)
+        technical_score = round(avg_relevance * 10, 1)
+        communication_score = round(avg_clarity * 10, 1)
+        confidence_score = round(avg_confidence * 10, 1)
+
+        return {
+            "overall_score": overall_score,
+            "technical_score": technical_score,
+            "communication_score": communication_score,
+            "confidence_score": confidence_score,
+        }
+
+    def _normalize_difficulty(self, value: Any) -> DifficultyLevel:
+        if isinstance(value, DifficultyLevel):
+            return value
+        if isinstance(value, str):
+            try:
+                return DifficultyLevel[value]
+            except Exception:
                 try:
-                    from pypdf import PdfReader
-                    reader = PdfReader(file_path)
-                    text = ""
-                    for page in reader.pages:
-                        text += page.extract_text() or ""
-                    return text[:5000]  # Limit to 5000 chars
-                except ImportError:
-                    logger.warning("pypdf not installed, skipping PDF text extraction")
-                    return f"[PDF Resume: {os.path.basename(file_path)}]"
-            
-            elif file_ext == "docx":
-                try:
-                    from docx import Document
-                    doc = Document(file_path)
-                    text = "\n".join([para.text for para in doc.paragraphs])
-                    return text[:5000]
-                except ImportError:
-                    logger.warning("python-docx not installed, skipping DOCX text extraction")
-                    return f"[DOCX Resume: {os.path.basename(file_path)}]"
-            
-            return ""
-            
-        except Exception as e:
-            logger.warning(f"Failed to extract resume text: {e}")
-            return ""
+                    return DifficultyLevel(value)
+                except Exception:
+                    return DifficultyLevel.MEDIUM
+        return DifficultyLevel.MEDIUM
     
     async def _update_profile_score(self, user_id: str, score: float) -> None:
         """Update the interview score in student profile."""
@@ -342,6 +415,11 @@ class InterviewService:
                     new_score = score
                 
                 await self.profile_repo.update_interview_score(user_id, new_score)
+
+                # Update overall readiness (simple average for now)
+                overall = (profile.aptitude_score + new_score + profile.coding_score) / 3
+                await self.profile_repo.update(user_id, overall_readiness=round(overall, 1))
+
                 logger.info(f"Updated interview score for user {user_id}: {new_score}")
         except Exception as e:
             logger.warning(f"Failed to update profile score: {e}")

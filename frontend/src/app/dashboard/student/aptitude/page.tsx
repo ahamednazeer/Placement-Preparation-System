@@ -18,25 +18,39 @@ import {
     CaretLeft,
     MonitorPlay,
     Cards,
-    Plus
+    Plus,
+    Lightning
 } from '@phosphor-icons/react';
 import { ImpactStyle } from '@capacitor/haptics';
 import {
     api,
+    PlacementDrive,
     StudentAptitudeDashboard,
     AssessmentStartResponse,
     QuestionBrief,
-    AttemptResponse
+    AttemptResponse,
+    AttemptDetailResponse,
+    ActiveAssessmentResponse,
+    ResumeAnalysis,
+    DriveAssessmentStartResponse,
+    DriveAssessmentActiveResponse,
+    DriveAssessmentSubmitResponse
 } from '@/lib/api';
 import { useCapacitor } from '@/components/CapacitorProvider';
 import Skeleton from '@/components/Skeleton';
 import { toast } from 'sonner';
+import { useSearchParams } from 'next/navigation';
 
 
 type TestState = 'DASHBOARD' | 'RUNNING' | 'COMPLETED' | 'REVIEW';
 
 export default function AptitudePage() {
     const { hapticImpact, hapticSelection } = useCapacitor();
+    const searchParams = useSearchParams();
+    const driveId = searchParams.get('drive');
+    const stageParam = searchParams.get('stage');
+    const driveStage = stageParam === 'APTITUDE' || stageParam === 'TECHNICAL' ? stageParam : null;
+    const isDriveAssessment = Boolean(driveId && driveStage);
 
     // UI State
     const [view, setView] = useState<TestState>('DASHBOARD');
@@ -50,10 +64,33 @@ export default function AptitudePage() {
     const [currentQuestionIdx, setCurrentQuestionIdx] = useState(0);
     const [userAnswers, setUserAnswers] = useState<Record<string, string | null>>({});
     const [testResults, setTestResults] = useState<AttemptResponse | null>(null);
+    const [attemptDetail, setAttemptDetail] = useState<AttemptDetailResponse | null>(null);
+    const [detailLoading, setDetailLoading] = useState(false);
+    const [activeResume, setActiveResume] = useState<ActiveAssessmentResponse | null>(null);
+    const [mode, setMode] = useState<'PRACTICE' | 'TEST' | 'RESUME_ONLY'>('PRACTICE');
+    const [difficultyFilter, setDifficultyFilter] = useState('');
+    const [questionCount, setQuestionCount] = useState(10);
+    const [resumeQuestionCount, setResumeQuestionCount] = useState(2);
+    const [questionTimeLeft, setQuestionTimeLeft] = useState<number | null>(null);
+    const [autoSaving, setAutoSaving] = useState(false);
+    const [questionsLoading, setQuestionsLoading] = useState(false);
+    const [resumeAnalysis, setResumeAnalysis] = useState<ResumeAnalysis | null>(null);
+    const [resumeSkills, setResumeSkills] = useState<string[]>([]);
+    const [resumeSkillLoading, setResumeSkillLoading] = useState(false);
+    const [resumeAnalyzing, setResumeAnalyzing] = useState(false);
+    const [resumeProjects, setResumeProjects] = useState<string[]>([]);
+    const [driveInfo, setDriveInfo] = useState<PlacementDrive | null>(null);
+    const [drivePassPercentage, setDrivePassPercentage] = useState<number | null>(null);
+    const [driveResult, setDriveResult] = useState<DriveAssessmentSubmitResponse | null>(null);
 
     // Timer State
     const [elapsedTime, setElapsedTime] = useState(0);
     const timerRef = useRef<NodeJS.Timeout | null>(null);
+    const questionTimerRef = useRef<NodeJS.Timeout | null>(null);
+    const userAnswersRef = useRef<Record<string, string | null>>({});
+    const timeLeftByQuestionRef = useRef<Record<string, number>>({});
+    const autoSaveRef = useRef<NodeJS.Timeout | null>(null);
+    const autoSaveIntervalRef = useRef<NodeJS.Timeout | null>(null);
 
     // Screen size for responsive charts
     const [isMobile, setIsMobile] = useState(false);
@@ -82,8 +119,138 @@ export default function AptitudePage() {
     }, []);
 
     useEffect(() => {
+        if (isDriveAssessment) return;
         fetchData();
-    }, [fetchData]);
+    }, [fetchData, isDriveAssessment]);
+
+    useEffect(() => {
+        const loadActive = async () => {
+            try {
+                if (isDriveAssessment) {
+                    setLoading(true);
+                }
+                if (isDriveAssessment && driveId && driveStage) {
+                    const data = await api.getActiveDriveAssessment(driveId, driveStage);
+                    setActiveResume(data as DriveAssessmentActiveResponse);
+                    setDrivePassPercentage(data.pass_percentage);
+                    return;
+                }
+                const data = await api.getActiveAssessment();
+                setActiveResume(data);
+            } catch (error: any) {
+                const msg = String(error?.message || '');
+                if (msg.includes('No active attempt') || msg.includes('404')) return;
+                if (msg.includes('Session expired')) {
+                    toast.error('Previous session expired.');
+                    return;
+                }
+                // ignore other errors silently for now
+            } finally {
+                if (isDriveAssessment) {
+                    setLoading(false);
+                }
+            }
+        };
+        loadActive();
+    }, [isDriveAssessment, driveId, driveStage]);
+
+    useEffect(() => {
+        const loadDriveInfo = async () => {
+            if (!isDriveAssessment || !driveId) return;
+            try {
+                const drive = await api.getDrive(driveId);
+                setDriveInfo(drive);
+            } catch (error) {
+                // Ignore drive info errors for now
+            }
+        };
+        loadDriveInfo();
+    }, [isDriveAssessment, driveId]);
+
+    const loadResumeAnalysis = useCallback(async () => {
+        setResumeSkillLoading(true);
+        try {
+            const [analysis, projectHints] = await Promise.all([
+                api.getResumeAnalysis(),
+                api.getResumeProjectHints(),
+            ]);
+            setResumeAnalysis(analysis);
+            if (!analysis && !projectHints) {
+                setResumeSkills([]);
+                setResumeProjects([]);
+                return;
+            }
+            if (analysis) {
+                const skills = new Set<string>();
+                (analysis.extracted_skills || []).forEach((s) => skills.add(String(s)));
+                const structured = analysis.structured_data || {};
+                const structuredSkills = structured.skills || structured.technical_skills || [];
+                if (Array.isArray(structuredSkills)) {
+                    structuredSkills.forEach((s: any) => skills.add(String(s)));
+                }
+                setResumeSkills(Array.from(skills).filter((s) => s.trim()));
+            } else {
+                setResumeSkills([]);
+            }
+
+            if (projectHints && projectHints.projects?.length) {
+                setResumeProjects(projectHints.projects);
+            } else if (analysis) {
+                const projects = new Set<string>();
+                const structured = analysis.structured_data || {};
+                const structuredProjects = structured.projects || structured.project_titles || [];
+                if (Array.isArray(structuredProjects)) {
+                    structuredProjects.forEach((p: any) => projects.add(String(p)));
+                }
+                if (Array.isArray(structured.experience_projects)) {
+                    structured.experience_projects.forEach((p: any) => projects.add(String(p)));
+                }
+                setResumeProjects(Array.from(projects).filter((p) => p.trim()));
+            } else {
+                setResumeProjects([]);
+            }
+        } finally {
+            setResumeSkillLoading(false);
+        }
+    }, []);
+
+    const handleRunResumeAnalysis = async () => {
+        if (resumeAnalyzing) return;
+        setResumeAnalyzing(true);
+        try {
+            await api.analyzeResume();
+            await loadResumeAnalysis();
+            toast.success('Resume analysis completed.');
+        } catch (error) {
+            const message = error instanceof Error ? error.message : null;
+            toast.error(message || 'Resume analysis failed');
+        } finally {
+            setResumeAnalyzing(false);
+        }
+    };
+
+    useEffect(() => {
+        if (isDriveAssessment || mode === 'PRACTICE') return;
+        loadResumeAnalysis();
+    }, [mode, loadResumeAnalysis, isDriveAssessment]);
+
+    useEffect(() => {
+        userAnswersRef.current = userAnswers;
+    }, [userAnswers]);
+
+    useEffect(() => {
+        if (isDriveAssessment) {
+            setMode('TEST');
+        }
+    }, [isDriveAssessment]);
+
+    useEffect(() => {
+        if (mode === 'RESUME_ONLY') {
+            setResumeQuestionCount(questionCount);
+            return;
+        }
+        setResumeQuestionCount((prev) => Math.min(prev, questionCount));
+    }, [mode, questionCount]);
 
     // Timer Logic
     useEffect(() => {
@@ -104,54 +271,260 @@ export default function AptitudePage() {
         hapticImpact(ImpactStyle.Medium);
         try {
             setLoading(true);
-            const data = await api.startAssessment({ category, count: 10 });
+            setQuestionsLoading(true);
+            let data: AssessmentStartResponse | DriveAssessmentStartResponse;
+            if (isDriveAssessment && driveId && driveStage) {
+                data = await api.startDriveAssessment(driveId, driveStage);
+                setDrivePassPercentage((data as DriveAssessmentStartResponse).pass_percentage);
+            } else {
+                const allowedCategories = ['QUANTITATIVE', 'LOGICAL', 'VERBAL', 'TECHNICAL', 'DATA_INTERPRETATION'];
+                const normalizedCategory = category && allowedCategories.includes(category) ? category : undefined;
+                data = await api.startAssessment({
+                    category: normalizedCategory,
+                    count: questionCount,
+                    difficulty: difficultyFilter || undefined,
+                    mode,
+                    resume_question_count: mode === 'PRACTICE' ? undefined : resumeQuestionCount
+                });
+            }
             setActiveTest(data);
+            if (isDriveAssessment) {
+                setDriveResult(null);
+            }
             setUserAnswers({});
+            userAnswersRef.current = {};
+            timeLeftByQuestionRef.current = {};
             setCurrentQuestionIdx(0);
             setElapsedTime(0);
+            setQuestionTimeLeft(null);
             setView('RUNNING');
             toast.success('Assessment started! Good luck.');
         } catch (error) {
             console.error('Failed to start assessment:', error);
-            toast.error('Failed to start assessment');
+            const message = error instanceof Error ? error.message : null;
+            toast.error(message || 'Failed to start assessment');
         } finally {
             setLoading(false);
+            setQuestionsLoading(false);
         }
+    };
+
+    const handleResumeTest = () => {
+        if (!activeResume) return;
+        hapticImpact(ImpactStyle.Medium);
+        setActiveTest(activeResume);
+        setUserAnswers(activeResume.user_answers || {});
+        userAnswersRef.current = activeResume.user_answers || {};
+        timeLeftByQuestionRef.current = {};
+        const firstUnanswered = activeResume.questions.findIndex(
+            q => !(activeResume.user_answers || {})[q.id]
+        );
+        setCurrentQuestionIdx(firstUnanswered >= 0 ? firstUnanswered : 0);
+        setElapsedTime(0);
+        setQuestionTimeLeft(null);
+        setActiveResume(null);
+        setView('RUNNING');
     };
 
     const handleOptionSelect = (option: string) => {
         if (!activeTest) return;
         hapticSelection();
         const questionId = activeTest.questions[currentQuestionIdx].id;
-        setUserAnswers(prev => ({ ...prev, [questionId]: option }));
+        const updated = { ...userAnswersRef.current, [questionId]: option };
+        userAnswersRef.current = updated;
+        setUserAnswers(updated);
     };
 
-    const handleSubmitTest = async () => {
-        if (!activeTest) return;
+    const buildAnswerMap = useCallback((base?: Record<string, string | null>) => {
+        const map = { ...(base || userAnswersRef.current) };
+        if (activeTest) {
+            activeTest.questions.forEach(q => {
+                if (!(q.id in map)) {
+                    map[q.id] = null;
+                }
+            });
+        }
+        return map;
+    }, [activeTest]);
+
+    const submitAssessmentWithMap = useCallback(async (answersMap: Record<string, string | null>) => {
+        if (!activeTest || submitting) return;
         hapticImpact(ImpactStyle.Heavy);
         setSubmitting(true);
         try {
-            const result = await api.submitAssessment(activeTest.attempt_id, {
-                user_answers: userAnswers,
-                time_taken_seconds: elapsedTime
-            });
-            setTestResults(result);
+            let result: AttemptResponse | DriveAssessmentSubmitResponse;
+            if (isDriveAssessment && driveId && driveStage) {
+                result = await api.submitDriveAssessment(driveId, driveStage, activeTest.attempt_id, {
+                    user_answers: answersMap,
+                    time_taken_seconds: elapsedTime
+                });
+                setDriveResult(result as DriveAssessmentSubmitResponse);
+            } else {
+                result = await api.submitAssessment(activeTest.attempt_id, {
+                    user_answers: answersMap,
+                    time_taken_seconds: elapsedTime
+                });
+            }
+            setTestResults(result as AttemptResponse);
             setView('COMPLETED');
             toast.success('Assessment submitted successfully!');
-            fetchData(); // Refresh dashboard
+            if (!isDriveAssessment) {
+                fetchData(); // Refresh dashboard
+            }
         } catch (error) {
             console.error('Failed to submit assessment:', error);
             toast.error('Failed to submit assessment');
         } finally {
             setSubmitting(false);
         }
+    }, [activeTest, elapsedTime, fetchData, hapticImpact, submitting, isDriveAssessment, driveId, driveStage]);
+
+    const handleSubmitTest = async () => {
+        if (!activeTest) return;
+        const answersMap = buildAnswerMap();
+        await submitAssessmentWithMap(answersMap);
     };
+
+    const handleQuestionTimeout = useCallback(() => {
+        if (!activeTest) return;
+        const currentQ = activeTest.questions[currentQuestionIdx];
+        const base = { ...userAnswersRef.current };
+        if (!(currentQ.id in base)) {
+            base[currentQ.id] = null;
+            userAnswersRef.current = base;
+            setUserAnswers(base);
+        }
+
+        if (currentQuestionIdx >= activeTest.total_questions - 1) {
+            const answersMap = buildAnswerMap(base);
+            submitAssessmentWithMap(answersMap);
+            return;
+        }
+
+        setCurrentQuestionIdx(prev => Math.min(activeTest.total_questions - 1, prev + 1));
+    }, [activeTest, buildAnswerMap, currentQuestionIdx, submitAssessmentWithMap]);
+
+    useEffect(() => {
+        if (questionTimerRef.current) {
+            clearInterval(questionTimerRef.current);
+            questionTimerRef.current = null;
+        }
+
+        if (view !== 'RUNNING' || !activeTest) {
+            setQuestionTimeLeft(null);
+            return;
+        }
+
+        const currentQ = activeTest.questions[currentQuestionIdx];
+        if (!currentQ?.time_limit_seconds) {
+            setQuestionTimeLeft(null);
+            return;
+        }
+
+        const questionId = currentQ.id;
+        const saved = timeLeftByQuestionRef.current[questionId];
+        const initial = typeof saved === 'number' ? saved : currentQ.time_limit_seconds;
+        timeLeftByQuestionRef.current[questionId] = initial;
+        setQuestionTimeLeft(initial);
+        questionTimerRef.current = setInterval(() => {
+            setQuestionTimeLeft(prev => {
+                if (prev === null) return null;
+                if (prev <= 1) {
+                    if (questionTimerRef.current) {
+                        clearInterval(questionTimerRef.current);
+                        questionTimerRef.current = null;
+                    }
+                    timeLeftByQuestionRef.current[questionId] = 0;
+                    handleQuestionTimeout();
+                    return 0;
+                }
+                const next = prev - 1;
+                timeLeftByQuestionRef.current[questionId] = next;
+                return next;
+            });
+        }, 1000);
+
+        return () => {
+            if (questionTimerRef.current) {
+                clearInterval(questionTimerRef.current);
+                questionTimerRef.current = null;
+            }
+        };
+    }, [view, activeTest, currentQuestionIdx, handleQuestionTimeout]);
 
     const formatTime = (seconds: number) => {
         const mins = Math.floor(seconds / 60);
         const secs = seconds % 60;
         return `${mins}:${secs.toString().padStart(2, '0')}`;
     };
+
+    const loadAttemptDetail = async (attemptId: string) => {
+        setDetailLoading(true);
+        try {
+            const detail = await api.getAttemptDetail(attemptId);
+            setAttemptDetail(detail);
+        } catch (error) {
+            console.error('Failed to load attempt details:', error);
+            toast.error('Failed to load detailed results');
+        } finally {
+            setDetailLoading(false);
+        }
+    };
+
+    const autoSaveAnswers = useCallback(async () => {
+        if (!activeTest || autoSaving) return;
+        setAutoSaving(true);
+        try {
+            await api.autoSaveAssessment(activeTest.attempt_id, {
+                user_answers: userAnswersRef.current,
+            });
+        } catch (error) {
+            // Silent fail, autosave retries on next change/interval
+        } finally {
+            setAutoSaving(false);
+        }
+    }, [activeTest, autoSaving]);
+
+    useEffect(() => {
+        if (autoSaveRef.current) clearTimeout(autoSaveRef.current);
+        if (view !== 'RUNNING' || !activeTest) return;
+        autoSaveRef.current = setTimeout(() => {
+            autoSaveAnswers();
+        }, 700);
+        return () => {
+            if (autoSaveRef.current) clearTimeout(autoSaveRef.current);
+        };
+    }, [userAnswers, view, activeTest, autoSaveAnswers]);
+
+    useEffect(() => {
+        if (autoSaveIntervalRef.current) clearInterval(autoSaveIntervalRef.current);
+        if (view !== 'RUNNING' || !activeTest) return;
+        autoSaveIntervalRef.current = setInterval(() => {
+            autoSaveAnswers();
+        }, 10000);
+        return () => {
+            if (autoSaveIntervalRef.current) clearInterval(autoSaveIntervalRef.current);
+        };
+    }, [view, activeTest, autoSaveAnswers]);
+
+    useEffect(() => {
+        if (!activeTest || view !== 'RUNNING') return;
+        if (activeTest.questions.length === 0) return;
+        const answers = userAnswersRef.current || {};
+        const firstUnanswered = activeTest.questions.findIndex((q) => !answers[q.id]);
+        if (firstUnanswered >= 0) {
+            setCurrentQuestionIdx(firstUnanswered);
+            return;
+        }
+        if (activeTest.questions.length === 0) return;
+        if (currentQuestionIdx < 0) {
+            setCurrentQuestionIdx(0);
+            return;
+        }
+        if (currentQuestionIdx >= activeTest.questions.length) {
+            setCurrentQuestionIdx(activeTest.questions.length - 1);
+        }
+    }, [activeTest, currentQuestionIdx, view, userAnswers]);
 
     // Renderers
     const renderDashboard = () => {
@@ -170,6 +543,9 @@ export default function AptitudePage() {
                 </div>
             );
         }
+
+        const isResumeOnly = mode === 'RESUME_ONLY';
+        const modeLabel = mode === 'RESUME_ONLY' ? 'Resume-Only' : mode === 'TEST' ? 'Timed Test' : 'Practice';
 
         return (
             <div className="space-y-6 animate-in fade-in duration-500">
@@ -287,11 +663,179 @@ export default function AptitudePage() {
 
                     {/* Quick Practice Selection */}
                     <div className="lg:col-span-4 space-y-4">
+                        {activeResume && (
+                            <div className="card border-emerald-500/30 bg-emerald-500/5">
+                                <div className="flex items-center gap-3 mb-3">
+                                    <div className="p-2 rounded-sm bg-emerald-500/20 text-emerald-300">
+                                        <Lightning size={18} />
+                                    </div>
+                                    <div>
+                                        <h3 className="text-xs font-chivo font-bold uppercase tracking-widest text-emerald-300">Active Session</h3>
+                                        <p className="text-[10px] text-slate-500 font-mono">
+                                            {activeResume.total_questions} questions · {activeResume.mode}
+                                        </p>
+                                        <p className="text-[9px] text-slate-600 font-mono uppercase tracking-widest">
+                                            Started {new Date(activeResume.started_at).toLocaleString()}
+                                        </p>
+                                    </div>
+                                </div>
+                                <div className="grid grid-cols-1 gap-2">
+                                    <button onClick={handleResumeTest} className="btn-primary w-full">Resume Session</button>
+                                    <button
+                                        onClick={async () => {
+                                            if (!activeResume?.attempt_id) return;
+                                            if (!confirm('Discard this session? This will remove saved progress.')) return;
+                                            try {
+                                                await api.discardAttempt(activeResume.attempt_id);
+                                                setActiveResume(null);
+                                                toast.success('Session discarded.');
+                                            } catch (error) {
+                                                const message = error instanceof Error ? error.message : null;
+                                                toast.error(message || 'Failed to discard session');
+                                            }
+                                        }}
+                                        className="btn-secondary w-full"
+                                    >
+                                        Discard Session
+                                    </button>
+                                </div>
+                            </div>
+                        )}
+
+                        <div className="card">
+                            <h3 className="text-xs font-chivo font-bold uppercase tracking-widest text-slate-400 mb-4 border-b border-slate-800 pb-2">Configuration</h3>
+                            <div className="space-y-3">
+                                <div className="grid grid-cols-2 gap-2">
+                                    <select
+                                        value={mode}
+                                        onChange={(e) => setMode(e.target.value as 'PRACTICE' | 'TEST' | 'RESUME_ONLY')}
+                                        className="input-modern h-10"
+                                    >
+                                        <option value="PRACTICE">Practice</option>
+                                        <option value="TEST">Test (Timed)</option>
+                                        <option value="RESUME_ONLY">Resume-Only (Timed)</option>
+                                    </select>
+                                    <select
+                                        value={difficultyFilter}
+                                        onChange={(e) => setDifficultyFilter(e.target.value)}
+                                        className="input-modern h-10"
+                                    >
+                                        <option value="">All Difficulty</option>
+                                        <option value="EASY">Easy</option>
+                                        <option value="MEDIUM">Medium</option>
+                                        <option value="HARD">Hard</option>
+                                    </select>
+                                </div>
+                                <select
+                                    value={questionCount}
+                                    onChange={(e) => setQuestionCount(Number(e.target.value))}
+                                    className="input-modern h-10"
+                                >
+                                    {[5, 10, 15, 20, 25].map(n => (
+                                        <option key={n} value={n}>{n} Questions</option>
+                                    ))}
+                                </select>
+                                {mode !== 'PRACTICE' && (
+                                    <div className="space-y-2">
+                                        <div className="flex items-center justify-between text-[9px] font-mono uppercase tracking-widest text-slate-500">
+                                            <span>Resume Questions</span>
+                                            <span className="text-slate-300">{resumeQuestionCount}/{questionCount}</span>
+                                        </div>
+                                        <input
+                                            type="range"
+                                            min={mode === 'RESUME_ONLY' ? questionCount : 0}
+                                            max={questionCount}
+                                            value={resumeQuestionCount}
+                                            onChange={(e) => setResumeQuestionCount(Number(e.target.value))}
+                                            disabled={mode === 'RESUME_ONLY'}
+                                            className="w-full accent-emerald-400"
+                                        />
+                                        <p className="text-[9px] font-mono text-slate-600 uppercase tracking-widest">
+                                            {mode === 'RESUME_ONLY'
+                                                ? 'All questions generated from your resume.'
+                                                : '0 = bank only, max = resume-only.'}
+                                        </p>
+                                    </div>
+                                )}
+                                {mode !== 'PRACTICE' && (
+                                    <div className="rounded-sm border border-slate-800/60 bg-slate-950/40 p-3">
+                                        <div className="flex items-center justify-between mb-2">
+                                            <p className="text-[9px] font-mono uppercase tracking-widest text-slate-500">Resume Skills</p>
+                                            {resumeAnalysis && (
+                                                <span className="text-[9px] text-slate-400 font-mono">Score {Math.round(resumeAnalysis.resume_score)}</span>
+                                            )}
+                                        </div>
+                                        {resumeSkillLoading ? (
+                                            <p className="text-[10px] text-slate-500 font-mono uppercase tracking-widest">Scanning resume…</p>
+                                        ) : resumeSkills.length > 0 ? (
+                                            <div className="flex flex-wrap gap-1.5">
+                                                {resumeSkills.slice(0, 18).map((skill) => (
+                                                    <span
+                                                        key={skill}
+                                                        className="px-2 py-0.5 rounded-sm text-[9px] font-mono uppercase tracking-widest bg-emerald-500/10 text-emerald-300 border border-emerald-500/20"
+                                                    >
+                                                        {skill}
+                                                    </span>
+                                                ))}
+                                                {resumeSkills.length > 18 && (
+                                                    <span className="px-2 py-0.5 rounded-sm text-[9px] font-mono uppercase tracking-widest bg-slate-800 text-slate-400 border border-slate-700">
+                                                        +{resumeSkills.length - 18} more
+                                                    </span>
+                                                )}
+                                            </div>
+                                        ) : (
+                                            <div className="flex items-center justify-between gap-3">
+                                                <p className="text-[10px] text-slate-500 font-mono uppercase tracking-widest">
+                                                    No extracted skills yet.
+                                                </p>
+                                                <button
+                                                    onClick={handleRunResumeAnalysis}
+                                                    disabled={resumeAnalyzing}
+                                                    className="btn-secondary h-8 px-3 text-[10px] uppercase tracking-widest"
+                                                >
+                                                    {resumeAnalyzing ? 'Analyzing…' : 'Run Analysis'}
+                                                </button>
+                                            </div>
+                                        )}
+
+                                        <div className="mt-3 border-t border-slate-800/60 pt-3">
+                                            <p className="text-[9px] font-mono uppercase tracking-widest text-slate-500 mb-2">Resume Projects</p>
+                                            {resumeSkillLoading ? (
+                                                <p className="text-[10px] text-slate-500 font-mono uppercase tracking-widest">Scanning projects…</p>
+                                            ) : resumeProjects.length > 0 ? (
+                                                <div className="flex flex-wrap gap-1.5">
+                                                    {resumeProjects.slice(0, 10).map((project) => (
+                                                        <span
+                                                            key={project}
+                                                            className="px-2 py-0.5 rounded-sm text-[9px] font-mono uppercase tracking-widest bg-blue-500/10 text-blue-300 border border-blue-500/20"
+                                                        >
+                                                            {project}
+                                                        </span>
+                                                    ))}
+                                                    {resumeProjects.length > 10 && (
+                                                        <span className="px-2 py-0.5 rounded-sm text-[9px] font-mono uppercase tracking-widest bg-slate-800 text-slate-400 border border-slate-700">
+                                                            +{resumeProjects.length - 10} more
+                                                        </span>
+                                                    )}
+                                                </div>
+                                            ) : (
+                                                <p className="text-[10px] text-slate-500 font-mono uppercase tracking-widest">
+                                                    No project titles detected yet.
+                                                </p>
+                                            )}
+                                        </div>
+                                    </div>
+                                )}
+                            </div>
+                        </div>
+
                         <div className="card bg-gradient-to-br from-blue-900/40 to-slate-900/60 border-blue-800/20 group relative overflow-hidden">
                             <div className="relative z-10">
                                 <h3 className="font-chivo font-bold text-lg uppercase tracking-wider mb-2 text-blue-300">Fast Assessment</h3>
                                 <p className="text-slate-400 text-xs mb-6 leading-relaxed font-inter">
-                                    10 random questions across all categories. Perfect for daily practice.
+                                    {mode === 'RESUME_ONLY'
+                                        ? `${questionCount} resume-derived questions.`
+                                        : `${questionCount} randomized questions across all categories.`} Mode: {modeLabel}.
                                 </p>
                                 <button
                                     onClick={() => handleStartTest()}
@@ -309,14 +853,17 @@ export default function AptitudePage() {
                             <div className="space-y-2">
                                 {[
                                     { id: 'QUANTITATIVE', label: 'Quant' },
-                                    { id: 'LOGICAL_REASONING', label: 'Logical' },
-                                    { id: 'VERBAL_ABILITY', label: 'Verbal' },
+                                    { id: 'LOGICAL', label: 'Logical' },
+                                    { id: 'VERBAL', label: 'Verbal' },
+                                    { id: 'TECHNICAL', label: 'Technical' },
                                     { id: 'DATA_INTERPRETATION', label: 'Data Interpretation' }
                                 ].map((cat) => (
                                     <button
                                         key={cat.id}
                                         onClick={() => handleStartTest(cat.id)}
-                                        className="w-full group bg-slate-950/50 hover:bg-slate-800/80 p-3 border border-slate-800/40 rounded-sm flex items-center justify-between transition-all active:scale-[0.98] btn-ripple"
+                                        disabled={isResumeOnly}
+                                        title={isResumeOnly ? 'Resume-only ignores category filters' : 'Start module'}
+                                        className={`w-full group p-3 border rounded-sm flex items-center justify-between transition-all active:scale-[0.98] btn-ripple ${isResumeOnly ? 'bg-slate-950/30 border-slate-900/60 text-slate-600 cursor-not-allowed' : 'bg-slate-950/50 hover:bg-slate-800/80 border-slate-800/40'}`}
                                     >
                                         <span className="text-[11px] font-mono text-slate-400 group-hover:text-blue-400">{cat.label}</span>
                                         <Plus size={12} className="text-slate-600" />
@@ -361,9 +908,36 @@ export default function AptitudePage() {
     };
 
     const renderTestRunner = () => {
+        if (questionsLoading) {
+            return (
+                <div className="max-w-3xl mx-auto space-y-4 animate-in fade-in duration-300">
+                    <div className="card p-6 text-center">
+                        <p className="text-slate-400 text-sm font-mono uppercase tracking-widest">Loading Questions</p>
+                        <div className="mt-4 h-1 w-full bg-slate-900 rounded-full overflow-hidden border border-slate-800">
+                            <div className="h-full w-1/3 bg-gradient-to-r from-blue-600 to-emerald-500 animate-pulse" />
+                        </div>
+                    </div>
+                    <Skeleton variant="card" className="h-64" />
+                </div>
+            );
+        }
         if (!activeTest) return null;
 
         const currentQ = activeTest.questions[currentQuestionIdx];
+        if (!currentQ) {
+            return (
+                <div className="max-w-2xl mx-auto card text-center py-10">
+                    <p className="text-slate-400 text-sm">No questions available for this session.</p>
+                    <button
+                        onClick={() => setView('DASHBOARD')}
+                        className="btn-secondary mt-4"
+                    >
+                        Back to Dashboard
+                    </button>
+                </div>
+            );
+        }
+        const isTimedSession = activeTest.mode !== 'PRACTICE';
         const progress = ((currentQuestionIdx + 1) / activeTest.total_questions) * 100;
 
         return (
@@ -385,6 +959,12 @@ export default function AptitudePage() {
                             <Timer weight="bold" className="text-blue-500/40" size={isMobile ? 14 : 18} />
                             {formatTime(elapsedTime)}
                         </div>
+                        {questionTimeLeft !== null && (
+                            <div className="flex items-center gap-1.5 text-amber-400 text-sm md:text-lg font-mono tracking-tighter">
+                                <Clock weight="bold" className="text-amber-500/40" size={isMobile ? 14 : 18} />
+                                {formatTime(questionTimeLeft)}
+                            </div>
+                        )}
                         <button
                             onClick={() => {
                                 if (confirm('Abort session? Progress will be lost.')) {
@@ -416,10 +996,30 @@ export default function AptitudePage() {
                 {/* Question Terminal */}
                 <div className="card p-5 md:p-10 relative overflow-hidden bg-slate-900/40">
                     <div className="relative z-10">
-                        <div className="flex items-center gap-2 mb-4 md:mb-6">
+                        <div className="flex flex-wrap items-center gap-2 mb-4 md:mb-6">
                             <span className="px-1.5 py-0.5 bg-slate-800 text-slate-400 rounded-sm text-[8px] md:text-[9px] font-mono border border-slate-700 uppercase tracking-wider">
                                 Sector: {currentQ.category.replace('_', ' ')}
                             </span>
+                            {currentQ.sub_topic && (
+                                <span className="px-1.5 py-0.5 bg-slate-800 text-slate-400 rounded-sm text-[8px] md:text-[9px] font-mono border border-slate-700 uppercase tracking-wider">
+                                    Topic: {currentQ.sub_topic}
+                                </span>
+                            )}
+                            {currentQ.difficulty && (
+                                <span className="px-1.5 py-0.5 bg-slate-800 text-slate-400 rounded-sm text-[8px] md:text-[9px] font-mono border border-slate-700 uppercase tracking-wider">
+                                    Level: {currentQ.difficulty}
+                                </span>
+                            )}
+                            {typeof currentQ.marks === 'number' && (
+                                <span className="px-1.5 py-0.5 bg-slate-800 text-slate-400 rounded-sm text-[8px] md:text-[9px] font-mono border border-slate-700 uppercase tracking-wider">
+                                    Marks: {currentQ.marks}
+                                </span>
+                            )}
+                            {currentQ.time_limit_seconds && (
+                                <span className="px-1.5 py-0.5 bg-slate-800 text-slate-400 rounded-sm text-[8px] md:text-[9px] font-mono border border-slate-700 uppercase tracking-wider">
+                                    Time: {formatTime(currentQ.time_limit_seconds)}
+                                </span>
+                            )}
                             <div className="h-px flex-1 bg-slate-800/50" />
                         </div>
 
@@ -458,9 +1058,10 @@ export default function AptitudePage() {
                 {/* Telemetry Navigation */}
                 <div className="flex items-center justify-between pt-4">
                     <button
-                        disabled={currentQuestionIdx === 0}
+                        disabled={currentQuestionIdx === 0 || isTimedSession}
                         onClick={() => { hapticImpact(); setCurrentQuestionIdx(prev => prev - 1); }}
-                        className="btn-secondary flex items-center gap-2 disabled:opacity-0"
+                        className="btn-secondary flex items-center gap-2 disabled:opacity-40 disabled:cursor-not-allowed"
+                        title={isTimedSession ? 'Prev disabled for timed sessions' : 'Previous'}
                     >
                         <CaretLeft weight="bold" />
                         Prev
@@ -492,14 +1093,26 @@ export default function AptitudePage() {
     const renderCompleted = () => {
         if (!testResults) return null;
 
+        const timeTaken = testResults.time_taken_seconds ?? elapsedTime;
+        const isDrive = isDriveAssessment && driveStage;
+        const drivePassed = isDrive ? driveResult?.passed : null;
+        const driveOutcomeText = drivePassed === false ? 'Assessment Failed' : 'Assessment Passed';
+        const iconClasses = drivePassed === false
+            ? 'bg-rose-500/10 text-rose-400 border-rose-500/20'
+            : 'bg-emerald-500/10 text-emerald-500 border-emerald-500/20';
+
         return (
             <div className="max-w-xl mx-auto space-y-8 animate-in zoom-in duration-500">
                 <div className="text-center space-y-4">
-                    <div className="w-20 h-20 bg-emerald-500/10 text-emerald-500 rounded-sm flex items-center justify-center mx-auto border border-emerald-500/20">
+                    <div className={`w-20 h-20 rounded-sm flex items-center justify-center mx-auto border ${iconClasses}`}>
                         <CheckCircle size={40} weight="duotone" />
                     </div>
-                    <h1 className="text-2xl font-chivo font-bold text-slate-100 uppercase tracking-tighter">Session.Result.Success</h1>
-                    <p className="text-slate-500 text-[10px] font-mono uppercase tracking-[0.2em]">Data migration to profile complete</p>
+                    <h1 className="text-2xl font-chivo font-bold text-slate-100 uppercase tracking-tighter">
+                        {isDrive ? driveOutcomeText : 'Session.Result.Success'}
+                    </h1>
+                    <p className="text-slate-500 text-[10px] font-mono uppercase tracking-[0.2em]">
+                        {isDrive ? 'Drive assessment completed' : 'Data migration to profile complete'}
+                    </p>
                 </div>
 
                 <div className="card bg-slate-900/40 p-10 border-slate-800 shadow-2xl">
@@ -510,37 +1123,202 @@ export default function AptitudePage() {
                         </div>
                         <div className="text-center space-y-1 border-l border-slate-800">
                             <p className="text-[9px] text-slate-500 uppercase tracking-widest font-mono">Telemetry</p>
-                            <p className="text-3xl font-mono font-bold text-slate-300 pt-2">{formatTime(elapsedTime)}</p>
+                            <p className="text-3xl font-mono font-bold text-slate-300 pt-2">{formatTime(timeTaken)}</p>
                         </div>
                     </div>
 
                     <div className="mt-10 pt-6 border-t border-slate-800 text-center">
                         <p className="text-xs font-mono text-slate-400 italic">
-                            {testResults.score >= 80 ? "// OPTIMAL_PERFORMANCE_DETECTED" :
-                                testResults.score >= 60 ? "// COMPETENT_SKILLS_ALIGNED" :
-                                    "// ADDITIONAL_TRAINING_REQUISITIONED"}
+                            {isDrive
+                                ? (drivePassed === false ? "// DRIVE_STAGE_FAILED" : "// DRIVE_STAGE_CLEARED")
+                                : testResults.score >= 80 ? "// OPTIMAL_PERFORMANCE_DETECTED" :
+                                    testResults.score >= 60 ? "// COMPETENT_SKILLS_ALIGNED" :
+                                        "// ADDITIONAL_TRAINING_REQUISITIONED"}
                         </p>
                     </div>
                 </div>
 
+                <div className="grid grid-cols-2 gap-3">
+                    <div className="card p-4 text-center">
+                        <p className="text-[9px] text-slate-500 uppercase tracking-widest font-mono">Total</p>
+                        <p className="text-2xl font-mono font-bold text-slate-200">{testResults.total_questions}</p>
+                    </div>
+                    <div className="card p-4 text-center">
+                        <p className="text-[9px] text-slate-500 uppercase tracking-widest font-mono">Correct</p>
+                        <p className="text-2xl font-mono font-bold text-emerald-400">{testResults.correct_answers ?? 0}</p>
+                    </div>
+                    <div className="card p-4 text-center">
+                        <p className="text-[9px] text-slate-500 uppercase tracking-widest font-mono">Wrong</p>
+                        <p className="text-2xl font-mono font-bold text-red-400">{testResults.wrong_answers ?? 0}</p>
+                    </div>
+                    <div className="card p-4 text-center">
+                        <p className="text-[9px] text-slate-500 uppercase tracking-widest font-mono">Skipped</p>
+                        <p className="text-2xl font-mono font-bold text-amber-300">{testResults.skipped ?? 0}</p>
+                    </div>
+                </div>
+
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <button
+                        onClick={() => {
+                            setView('REVIEW');
+                            if (testResults?.id) {
+                                loadAttemptDetail(testResults.id);
+                            }
+                        }}
+                        className="btn-secondary w-full py-4 text-xs tracking-widest font-bold btn-ripple"
+                    >
+                        View Detailed Answers
+                    </button>
                     <button
                         onClick={() => setView('DASHBOARD')}
                         className="btn-secondary w-full py-4 text-xs tracking-widest font-bold btn-ripple"
                     >
                         Terminal Dashboard
                     </button>
-                    <button
-                        onClick={() => handleStartTest(activeTest?.questions[0].category)}
-                        className="btn-primary w-full py-4 text-xs tracking-widest font-bold btn-ripple flex items-center justify-center gap-2"
-                    >
-                        Recycle Training
-                        <ArrowsCounterClockwise weight="bold" />
-                    </button>
+                    {!isDriveAssessment && (
+                        <button
+                            onClick={() => handleStartTest(activeTest?.questions[0].category)}
+                            className="btn-primary w-full py-4 text-xs tracking-widest font-bold btn-ripple flex items-center justify-center gap-2"
+                        >
+                            Recycle Training
+                            <ArrowsCounterClockwise weight="bold" />
+                        </button>
+                    )}
                 </div>
             </div>
         );
     };
+
+    const renderReview = () => {
+        if (detailLoading) {
+            return (
+                <div className="space-y-4">
+                    <Skeleton variant="card" className="h-24" />
+                    <Skeleton variant="card" className="h-64" />
+                </div>
+            );
+        }
+
+        if (!attemptDetail) {
+            return (
+                <div className="card text-center py-10">
+                    <p className="text-slate-500 text-sm">No detailed results available.</p>
+                    <button
+                        onClick={() => setView('COMPLETED')}
+                        className="btn-secondary mt-4"
+                    >
+                        Back to Summary
+                    </button>
+                </div>
+            );
+        }
+
+        return (
+            <div className="max-w-4xl mx-auto space-y-6 animate-in fade-in duration-500">
+                <div className="card p-4 flex items-center justify-between">
+                    <div>
+                        <h2 className="text-sm font-chivo font-bold uppercase tracking-wider text-slate-100">Detailed Answers</h2>
+                        <p className="text-[10px] text-slate-500 font-mono uppercase tracking-widest">
+                            {attemptDetail.correct_answers} correct · {attemptDetail.wrong_answers} wrong · {attemptDetail.skipped} skipped
+                        </p>
+                    </div>
+                    <button
+                        onClick={() => setView('COMPLETED')}
+                        className="btn-secondary h-9 px-3"
+                    >
+                        Back
+                    </button>
+                </div>
+
+                <div className="space-y-3">
+                    {attemptDetail.detailed_answers.map((ans, idx) => (
+                        <div key={`${ans.id}-${idx}`} className="card p-4">
+                            <div className="flex items-center justify-between mb-2">
+                                <p className="text-xs font-mono text-slate-500">Q{idx + 1} · {ans.category.replace('_', ' ')}</p>
+                                <span className={`text-xs px-2 py-0.5 rounded-sm ${ans.is_correct ? 'bg-emerald-500/20 text-emerald-300' : (ans.selected_option ? 'bg-red-500/20 text-red-300' : 'bg-amber-500/20 text-amber-300')}`}>
+                                    {ans.is_correct ? 'Correct' : (ans.selected_option ? 'Wrong' : 'Skipped')}
+                                </span>
+                            </div>
+                            <p className="text-sm text-slate-100 mb-3">{ans.question_text}</p>
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-2 text-xs">
+                                {Object.entries(ans.options).map(([key, value]) => {
+                                    const isCorrect = ans.correct_option === key;
+                                    const isSelected = ans.selected_option === key;
+                                    return (
+                                        <div
+                                            key={key}
+                                            className={`p-2 rounded-sm border ${isCorrect ? 'border-emerald-500/40 bg-emerald-500/10' : isSelected ? 'border-red-500/40 bg-red-500/10' : 'border-slate-800 bg-slate-900/40'}`}
+                                        >
+                                            <span className="font-mono text-slate-400 mr-2">{key}.</span>
+                                            <span className="text-slate-300">{value}</span>
+                                        </div>
+                                    );
+                                })}
+                            </div>
+                            {ans.explanation && (
+                                <div className="mt-3 text-xs text-slate-400">
+                                    <span className="text-slate-500 font-mono uppercase tracking-widest mr-2">Explanation</span>
+                                    {ans.explanation}
+                                </div>
+                            )}
+                            {typeof ans.marks === 'number' && (
+                                <div className="mt-2 text-[10px] text-slate-500 font-mono uppercase tracking-widest">
+                                    Marks: {ans.marks}
+                                </div>
+                            )}
+                        </div>
+                    ))}
+                </div>
+            </div>
+        );
+    };
+
+    if (isDriveAssessment && view === 'DASHBOARD') {
+        if (loading) {
+            return (
+                <div className="space-y-4">
+                    <Skeleton variant="card" className="h-20" />
+                    <Skeleton variant="card" className="h-64" />
+                </div>
+            );
+        }
+
+        const passThreshold = drivePassPercentage ?? (
+            driveStage === 'APTITUDE'
+                ? driveInfo?.aptitude_pass_percentage
+                : driveInfo?.technical_pass_percentage
+        );
+
+        return (
+            <div className="max-w-3xl mx-auto py-6 space-y-4">
+                <div className="scanlines opacity-[0.03]" />
+                <div className="card space-y-2">
+                    <h1 className="font-chivo font-bold text-xl uppercase tracking-tight">Drive Assessment</h1>
+                    <p className="text-xs text-slate-500">
+                        {driveInfo ? `${driveInfo.company_name} — ${driveInfo.job_title}` : 'Loading drive info...'}
+                    </p>
+                    <div className="flex flex-wrap gap-2 text-[10px] uppercase font-mono text-slate-400">
+                        <span className="px-2 py-1 rounded-sm border border-slate-800">Stage: {driveStage}</span>
+                        {typeof passThreshold === 'number' && (
+                            <span className="px-2 py-1 rounded-sm border border-slate-800">Pass: {passThreshold}%</span>
+                        )}
+                    </div>
+                </div>
+
+                <div className="card">
+                    {activeResume ? (
+                        <button onClick={handleResumeTest} className="btn-primary w-full h-12 flex items-center justify-center gap-2 uppercase tracking-widest">
+                            Resume Assessment
+                        </button>
+                    ) : (
+                        <button onClick={() => handleStartTest()} className="btn-primary w-full h-12 flex items-center justify-center gap-2 uppercase tracking-widest">
+                            Start Assessment
+                        </button>
+                    )}
+                </div>
+            </div>
+        );
+    }
 
     return (
         <div className="max-w-7xl mx-auto py-2">
@@ -582,9 +1360,8 @@ export default function AptitudePage() {
                 {view === 'DASHBOARD' && renderDashboard()}
                 {view === 'RUNNING' && renderTestRunner()}
                 {view === 'COMPLETED' && renderCompleted()}
+                {view === 'REVIEW' && renderReview()}
             </div>
         </div>
     );
 }
-
-

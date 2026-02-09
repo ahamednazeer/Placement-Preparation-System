@@ -2,7 +2,7 @@
 Profile API Pydantic schemas.
 """
 from datetime import datetime
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Any
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -139,6 +139,37 @@ class ResumeUploadResponse(BaseModel):
     success: bool
     message: str
     resume: Optional[ResumeResponse] = None
+
+
+class ResumeAnalysisResponse(BaseModel):
+    """Resume analysis response."""
+    
+    id: str
+    student_id: str
+    resume_id: Optional[str] = None
+    preferred_role: Optional[str] = None
+    
+    resume_score: float
+    skill_match_score: float
+    ats_score: float
+    content_score: float
+    project_score: float
+    
+    extracted_skills: List[str] = []
+    missing_skills: List[str] = []
+    suggestions: List[str] = []
+    structured_data: Dict[str, Any] = {}
+    
+    analyzed_at: str
+    
+    class Config:
+        from_attributes = True
+
+
+class ResumeProjectHintsResponse(BaseModel):
+    """Resume project hints extracted from resume text."""
+    projects: List[str] = []
+    source: str = "resume_text"
 
 
 class MessageResponse(BaseModel):

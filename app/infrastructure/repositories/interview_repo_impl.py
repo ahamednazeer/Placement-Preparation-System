@@ -10,7 +10,7 @@ from sqlalchemy import select, func, desc
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.infrastructure.database.models import InterviewSession
-from app.core.constants import InterviewType
+from app.core.constants import InterviewType, InterviewMode, DifficultyLevel, InterviewStatus
 
 
 class InterviewRepositoryImpl:
@@ -23,6 +23,8 @@ class InterviewRepositoryImpl:
         self,
         user_id: str,
         interview_type: InterviewType,
+        mode: InterviewMode,
+        difficulty: DifficultyLevel,
         target_role: Optional[str] = None,
         target_company: Optional[str] = None,
     ) -> InterviewSession:
@@ -31,6 +33,9 @@ class InterviewRepositoryImpl:
             id=str(uuid4()),
             user_id=user_id,
             interview_type=interview_type,
+            mode=mode,
+            difficulty=difficulty,
+            status=InterviewStatus.IN_PROGRESS,
             target_role=target_role,
             target_company=target_company,
             conversation=[],
@@ -109,6 +114,7 @@ class InterviewRepositoryImpl:
         confidence_score: Optional[float] = None,
         feedback_summary: Optional[str] = None,
         improvement_areas: Optional[List[str]] = None,
+        status: InterviewStatus = InterviewStatus.COMPLETED,
     ) -> Optional[InterviewSession]:
         """Mark session as complete with final scores and feedback."""
         interview = await self.get_by_id(session_id)
@@ -122,6 +128,7 @@ class InterviewRepositoryImpl:
         interview.feedback_summary = feedback_summary
         interview.improvement_areas = improvement_areas
         interview.ended_at = datetime.utcnow()
+        interview.status = status
         
         await self.session.commit()
         await self.session.refresh(interview)
@@ -134,7 +141,7 @@ class InterviewRepositoryImpl:
             select(func.count(InterviewSession.id))
             .where(
                 InterviewSession.user_id == user_id,
-                InterviewSession.ended_at.isnot(None)
+                InterviewSession.status == InterviewStatus.COMPLETED
             )
         )
         
@@ -143,7 +150,7 @@ class InterviewRepositoryImpl:
             select(func.avg(InterviewSession.overall_score))
             .where(
                 InterviewSession.user_id == user_id,
-                InterviewSession.ended_at.isnot(None)
+                InterviewSession.status == InterviewStatus.COMPLETED
             )
         )
         
@@ -152,7 +159,7 @@ class InterviewRepositoryImpl:
             select(func.max(InterviewSession.overall_score))
             .where(
                 InterviewSession.user_id == user_id,
-                InterviewSession.ended_at.isnot(None)
+                InterviewSession.status == InterviewStatus.COMPLETED
             )
         )
         

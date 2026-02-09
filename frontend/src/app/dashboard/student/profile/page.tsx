@@ -25,7 +25,7 @@ import {
     Warning,
     FloppyDisk,
 } from '@phosphor-icons/react';
-import { api, ProfileUpdateData, ResumeInfo } from '@/lib/api';
+import { api, ProfileResponse, ResumeInfo } from '@/lib/api';
 import { useCapacitor } from '@/components/CapacitorProvider';
 import Skeleton from '@/components/Skeleton';
 import { toast } from 'sonner';
@@ -59,12 +59,17 @@ function ProfilePageContent() {
     const [loading, setLoading] = useState(true);
     const [saving, setSaving] = useState(false);
     const [autoSaving, setAutoSaving] = useState(false);
+    const [autoSaveError, setAutoSaveError] = useState<string | null>(null);
     const [resumeInfo, setResumeInfo] = useState<ResumeInfo | null>(null);
     const [uploading, setUploading] = useState(false);
     const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
     const [showExitConfirm, setShowExitConfirm] = useState(false);
     const [profilePhoto, setProfilePhoto] = useState<string | null>(null);
     const autoSaveTimer = useRef<NodeJS.Timeout | null>(null);
+    const autoSaveInFlight = useRef(false);
+    const autoSaveQueued = useRef(false);
+    const autoSaveReady = useRef(false);
+    const lastChangeAt = useRef(0);
 
     const [skills, setSkills] = useState<string[]>([]);
     const [newSkill, setNewSkill] = useState('');
@@ -73,7 +78,29 @@ function ProfilePageContent() {
     const [newRole, setNewRole] = useState('');
     const [preferredDomains, setPreferredDomains] = useState<string[]>([]);
 
-    const { register, reset, getValues, trigger, formState: { errors, isDirty } } = useForm<FormData>({ mode: 'onChange' });
+    const { register, reset, getValues, trigger, watch, formState: { errors, isDirty } } = useForm<FormData>({
+        mode: 'onChange',
+        shouldUnregister: false,
+    });
+
+    const applyProfileData = useCallback((profileData: ProfileResponse) => {
+        setSkills(profileData.technical_skills || []);
+        setSoftSkills(profileData.soft_skills || {});
+        setPreferredRoles(profileData.preferred_roles || []);
+        setPreferredDomains(profileData.preferred_domains || []);
+        reset({
+            register_number: profileData.register_number || '',
+            college_name: profileData.college_name || '',
+            department: profileData.department || '',
+            degree: profileData.degree || '',
+            current_year: profileData.current_year || '',
+            graduation_year: profileData.graduation_year || '',
+            cgpa: profileData.cgpa || '',
+            linkedin_url: profileData.linkedin_url || '',
+            github_url: profileData.github_url || '',
+            portfolio_url: profileData.portfolio_url || '',
+        }, { keepDirty: false });
+    }, [reset]);
 
     // Track unsaved changes
     useEffect(() => {
@@ -99,96 +126,112 @@ function ProfilePageContent() {
                 api.getResumeInfo(),
             ]);
             setResumeInfo(resumeData);
-            setSkills(profileData.technical_skills || []);
-            setSoftSkills(profileData.soft_skills || {});
-            setPreferredRoles(profileData.preferred_roles || []);
-            setPreferredDomains(profileData.preferred_domains || []);
-            reset({
-                register_number: profileData.register_number || '',
-                college_name: profileData.college_name || '',
-                department: profileData.department || '',
-                degree: profileData.degree || '',
-                current_year: profileData.current_year || '',
-                graduation_year: profileData.graduation_year || '',
-                cgpa: profileData.cgpa || '',
-                linkedin_url: profileData.linkedin_url || '',
-                github_url: profileData.github_url || '',
-                portfolio_url: profileData.portfolio_url || '',
-            }, { keepDirty: false });
+            applyProfileData(profileData);
         } catch (error) {
             console.error('Failed to fetch profile:', error);
         } finally {
+            autoSaveReady.current = true;
             setLoading(false);
         }
-    }, [reset]);
+    }, [applyProfileData]);
 
     useEffect(() => { fetchProfile(); }, [fetchProfile]);
 
-    // Auto-save function
-    const autoSave = useCallback(async () => {
+    const buildProfilePayload = useCallback(() => {
         const data = getValues();
-        setAutoSaving(true);
-        try {
-            await api.updateProfile({
-                register_number: data.register_number || undefined,
-                college_name: data.college_name || undefined,
-                department: data.department || undefined,
-                degree: data.degree || undefined,
-                current_year: data.current_year ? Number(data.current_year) : undefined,
-                graduation_year: data.graduation_year ? Number(data.graduation_year) : undefined,
-                cgpa: data.cgpa ? Number(data.cgpa) : undefined,
-                technical_skills: skills,
-                soft_skills: Object.keys(softSkills).length > 0 ? softSkills as any : undefined,
-                preferred_roles: preferredRoles,
-                preferred_domains: preferredDomains,
-                linkedin_url: data.linkedin_url || undefined,
-                github_url: data.github_url || undefined,
-                portfolio_url: data.portfolio_url || undefined,
-            });
-            setHasUnsavedChanges(false);
-        } catch (error) {
-            // Silent fail for auto-save
-        } finally {
-            setAutoSaving(false);
-        }
+        const toNumberInRange = (value: number | '' | undefined, min: number, max: number) => {
+            if (value === '' || value === undefined) return undefined;
+            const num = typeof value === 'number' ? value : Number(value);
+            if (!Number.isFinite(num)) return undefined;
+            if (num < min || num > max) return undefined;
+            return num;
+        };
+        return {
+            register_number: data.register_number || undefined,
+            college_name: data.college_name || undefined,
+            department: data.department || undefined,
+            degree: data.degree || undefined,
+            current_year: toNumberInRange(data.current_year, 1, 8),
+            graduation_year: toNumberInRange(data.graduation_year, 2020, 2035),
+            cgpa: toNumberInRange(data.cgpa, 0, 10),
+            technical_skills: skills,
+            soft_skills: softSkills,
+            preferred_roles: preferredRoles,
+            preferred_domains: preferredDomains,
+            // allow clearing by sending empty string
+            linkedin_url: (data.linkedin_url ?? '').trim(),
+            github_url: (data.github_url ?? '').trim(),
+            portfolio_url: (data.portfolio_url ?? '').trim(),
+        };
     }, [getValues, skills, softSkills, preferredRoles, preferredDomains]);
 
-    // Trigger auto-save on step change
-    useEffect(() => {
-        if (!loading && step > 1) {
-            if (autoSaveTimer.current) clearTimeout(autoSaveTimer.current);
-            autoSaveTimer.current = setTimeout(() => autoSave(), 1000);
+    // Auto-save function
+    const autoSave = useCallback(async () => {
+        if (autoSaveInFlight.current) return;
+        autoSaveInFlight.current = true;
+        const saveStartedAt = Date.now();
+        setAutoSaving(true);
+        try {
+            const updated = await api.updateProfile(buildProfilePayload());
+            if (lastChangeAt.current <= saveStartedAt) {
+                applyProfileData(updated);
+                setHasUnsavedChanges(false);
+            }
+            setAutoSaveError(null);
+        } catch (error) {
+            const message = error instanceof Error ? error.message : 'Auto-save failed';
+            setAutoSaveError(message);
+        } finally {
+            setAutoSaving(false);
+            autoSaveInFlight.current = false;
+            if (autoSaveQueued.current) {
+                autoSaveQueued.current = false;
+                // schedule a new save for changes made while saving
+                if (autoSaveTimer.current) clearTimeout(autoSaveTimer.current);
+                autoSaveTimer.current = setTimeout(() => autoSave(), 600);
+            }
         }
-        return () => { if (autoSaveTimer.current) clearTimeout(autoSaveTimer.current); };
-    }, [step, autoSave, loading]);
+    }, [applyProfileData, buildProfilePayload]);
+
+    const scheduleAutoSave = useCallback(() => {
+        if (loading || !autoSaveReady.current) return;
+        if (autoSaveInFlight.current) {
+            autoSaveQueued.current = true;
+            return;
+        }
+        if (autoSaveTimer.current) clearTimeout(autoSaveTimer.current);
+        autoSaveTimer.current = setTimeout(() => autoSave(), 1000);
+    }, [autoSave, loading]);
+
+    // Trigger auto-save on any form change
+    useEffect(() => {
+        const subscription = watch(() => {
+            lastChangeAt.current = Date.now();
+            if (autoSaveError) setAutoSaveError(null);
+            scheduleAutoSave();
+        });
+        return () => subscription.unsubscribe();
+    }, [watch, scheduleAutoSave, autoSaveError]);
+
+    // Trigger auto-save on non-form state changes (skills, preferences)
+    useEffect(() => {
+        lastChangeAt.current = Date.now();
+        scheduleAutoSave();
+    }, [skills, softSkills, preferredRoles, preferredDomains, scheduleAutoSave]);
 
     const saveProfile = async () => {
         hapticImpact();
         setSaving(true);
         const data = getValues();
         try {
-            await api.updateProfile({
-                register_number: data.register_number || undefined,
-                college_name: data.college_name || undefined,
-                department: data.department || undefined,
-                degree: data.degree || undefined,
-                current_year: data.current_year ? Number(data.current_year) : undefined,
-                graduation_year: data.graduation_year ? Number(data.graduation_year) : undefined,
-                cgpa: data.cgpa ? Number(data.cgpa) : undefined,
-                technical_skills: skills,
-                soft_skills: Object.keys(softSkills).length > 0 ? softSkills as any : undefined,
-                preferred_roles: preferredRoles,
-                preferred_domains: preferredDomains,
-                linkedin_url: data.linkedin_url || undefined,
-                github_url: data.github_url || undefined,
-                portfolio_url: data.portfolio_url || undefined,
-            });
+            const updated = await api.updateProfile(buildProfilePayload());
+            applyProfileData(updated);
             toast.success('Profile saved!');
             setHasUnsavedChanges(false);
             if (isSetupMode) router.push('/dashboard/student');
             return true;
         } catch (error: any) {
-            toast.error('Failed to save');
+            toast.error(error?.message || 'Failed to save');
             return false;
         } finally {
             setSaving(false);
@@ -197,7 +240,7 @@ function ProfilePageContent() {
 
     const next = async () => {
         hapticImpact();
-        if (step === 1) {
+            if (step === 1) {
             const valid = await trigger(['register_number', 'college_name', 'department', 'degree', 'current_year', 'graduation_year', 'cgpa']);
             if (!valid) { toast.error('Fill all required fields'); return; }
         }
@@ -251,7 +294,7 @@ function ProfilePageContent() {
         try {
             const result = await api.uploadResume(file);
             if (result.success && result.resume) { setResumeInfo(result.resume); toast.success('Resume uploaded!'); }
-        } catch { toast.error('Upload failed'); }
+        } catch (error: any) { toast.error(error?.message || 'Upload failed'); }
         finally { setUploading(false); e.target.value = ''; }
     };
 
@@ -313,7 +356,12 @@ function ProfilePageContent() {
                                     <CircleNotch size={10} className="animate-spin" /> Saving...
                                 </span>
                             )}
-                            {!autoSaving && !hasUnsavedChanges && step > 1 && (
+                            {!autoSaving && autoSaveError && (
+                                <span className="text-xs text-red-400 flex items-center gap-1">
+                                    <Warning size={10} /> {autoSaveError}
+                                </span>
+                            )}
+                            {!autoSaving && !autoSaveError && !hasUnsavedChanges && step > 1 && (
                                 <span className="text-xs text-green-400 flex items-center gap-1">
                                     <Check size={10} /> Saved
                                 </span>
@@ -374,20 +422,22 @@ function ProfilePageContent() {
                             <label className="text-xs text-slate-400 uppercase tracking-wider mb-1 block">
                                 Year <span className="text-red-400">*</span>
                             </label>
-                            <select {...register('current_year', { required: true })} className={`${inputClass(!!errors.current_year)} text-center`}>
+                            <select {...register('current_year', { required: true, valueAsNumber: true })} className={`${inputClass(!!errors.current_year)} text-center`}>
                                 <option value="">-</option>
                                 {[1, 2, 3, 4].map(y => <option key={y} value={y}>{y}</option>)}
                             </select>
                         </div>
                         <div>
                             <label className="text-xs text-slate-400 uppercase tracking-wider mb-1 block">Grad</label>
-                            <input type="number" {...register('graduation_year', { required: true })} className={`${inputClass(!!errors.graduation_year)} text-center`} placeholder="2025" />
+                            <input type="number" {...register('graduation_year', { required: true, min: 2020, max: 2035, valueAsNumber: true })} className={`${inputClass(!!errors.graduation_year)} text-center`} placeholder="2025" />
+                            {errors.graduation_year && <p className="text-xs text-red-400 mt-1 flex items-center gap-1"><Warning size={12} /> 2020-2035</p>}
                         </div>
                         <div>
                             <label className="text-xs text-slate-400 uppercase tracking-wider mb-1 block">
                                 CGPA <span className="text-red-400">*</span>
                             </label>
-                            <input type="number" step="0.01" {...register('cgpa', { required: true, min: 0, max: 10 })} className={`${inputClass(!!errors.cgpa)} text-center`} placeholder="8.5" />
+                            <input type="number" step="0.01" {...register('cgpa', { required: true, min: 0, max: 10, valueAsNumber: true })} className={`${inputClass(!!errors.cgpa)} text-center`} placeholder="8.5" />
+                            {errors.cgpa && <p className="text-xs text-red-400 mt-1 flex items-center gap-1"><Warning size={12} /> 0-10</p>}
                         </div>
                     </div>
                 </div>

@@ -49,6 +49,13 @@ class InterviewMode(str, Enum):
     VOICE = "VOICE"
 
 
+class InterviewStatus(str, Enum):
+    """Lifecycle status for interview sessions."""
+    IN_PROGRESS = "IN_PROGRESS"
+    COMPLETED = "COMPLETED"
+    ABANDONED = "ABANDONED"
+
+
 class PlacementDriveStatus(str, Enum):
     """Status of placement drives."""
     UPCOMING = "UPCOMING"
@@ -66,6 +73,20 @@ class ApplicationStatus(str, Enum):
     WITHDRAWN = "WITHDRAWN"
 
 
+class DriveAssessmentStage(str, Enum):
+    """Assessment stage for placement drives."""
+    APTITUDE = "APTITUDE"
+    TECHNICAL = "TECHNICAL"
+
+
+class DriveAssessmentStatus(str, Enum):
+    """Assessment progress status for placement drives."""
+    NOT_STARTED = "NOT_STARTED"
+    IN_PROGRESS = "IN_PROGRESS"
+    PASSED = "PASSED"
+    FAILED = "FAILED"
+
+
 class CodingLanguage(str, Enum):
     """Supported programming languages."""
     PYTHON = "PYTHON"
@@ -73,6 +94,34 @@ class CodingLanguage(str, Enum):
     CPP = "CPP"
     JAVASCRIPT = "JAVASCRIPT"
     C = "C"
+
+
+class QuestionStatus(str, Enum):
+    """Aptitude question lifecycle status."""
+    DRAFT = "DRAFT"
+    ACTIVE = "ACTIVE"
+    ARCHIVED = "ARCHIVED"
+
+
+class QuestionApprovalStatus(str, Enum):
+    """Approval workflow status for questions."""
+    DRAFT = "DRAFT"
+    PENDING = "PENDING"
+    APPROVED = "APPROVED"
+    REJECTED = "REJECTED"
+
+
+class AptitudeMode(str, Enum):
+    """Aptitude assessment mode."""
+    PRACTICE = "PRACTICE"
+    TEST = "TEST"
+    RESUME_ONLY = "RESUME_ONLY"
+
+
+class AttemptStatus(str, Enum):
+    """Attempt lifecycle status."""
+    IN_PROGRESS = "IN_PROGRESS"
+    COMPLETED = "COMPLETED"
 
 
 # API Version

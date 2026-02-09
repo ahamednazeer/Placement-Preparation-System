@@ -26,9 +26,9 @@ class ProfileService:
     async def get_profile_dict(self, user_id: str) -> Optional[Dict[str, Any]]:
         """Get profile as dictionary for API response."""
         profile = await self.profile_repo.get_by_user_id(user_id)
-        
         if not profile:
-            return None
+            # Create a profile if missing (legacy users or inconsistent data)
+            profile = await self.profile_repo.create(user_id)
         
         return {
             "id": profile.id,
@@ -76,6 +76,10 @@ class ProfileService:
         portfolio_url: Optional[str] = None,
     ) -> Optional[StudentProfile]:
         """Update profile with provided fields."""
+        # Ensure profile exists (handles legacy users without a profile row)
+        profile = await self.profile_repo.get_by_user_id(user_id)
+        if not profile:
+            await self.profile_repo.create(user_id)
         
         # Build update dict from provided values
         update_data = {}

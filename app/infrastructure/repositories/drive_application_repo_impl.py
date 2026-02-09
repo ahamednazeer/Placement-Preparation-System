@@ -43,7 +43,10 @@ class DriveApplicationRepositoryImpl:
         """Get application by ID."""
         result = await self.db.execute(
             select(DriveApplication)
-            .options(selectinload(DriveApplication.user), selectinload(DriveApplication.drive))
+            .options(
+                selectinload(DriveApplication.user).selectinload(User.student_profile),
+                selectinload(DriveApplication.drive),
+            )
             .where(DriveApplication.id == application_id)
         )
         return result.scalar_one_or_none()
@@ -67,7 +70,7 @@ class DriveApplicationRepositoryImpl:
         """List applications for a drive."""
         query = (
             select(DriveApplication)
-            .options(selectinload(DriveApplication.user))
+            .options(selectinload(DriveApplication.user).selectinload(User.student_profile))
             .where(DriveApplication.drive_id == drive_id)
         )
         

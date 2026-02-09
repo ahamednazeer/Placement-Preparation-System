@@ -3,7 +3,7 @@
 import React, { useEffect, useState } from 'react';
 import { Brain, Microphone, Code, Buildings, Trophy, ChartLineUp, Clock, Target } from '@phosphor-icons/react';
 import { useRouter } from 'next/navigation';
-import { api } from '@/lib/api';
+import { api, ResumeAnalysis } from '@/lib/api';
 import { useCapacitor } from '@/components/CapacitorProvider';
 import Skeleton from '@/components/Skeleton';
 
@@ -58,6 +58,7 @@ export default function StudentDashboard() {
     const [loading, setLoading] = useState(true);
     const [user, setUser] = useState<any>(null);
     const [profileStatus, setProfileStatus] = useState<{ is_complete: boolean; completion_percentage: number } | null>(null);
+    const [resumeAnalysis, setResumeAnalysis] = useState<ResumeAnalysis | null>(null);
     const [scores] = useState({
         aptitude: 0,
         interview: 0,
@@ -68,12 +69,14 @@ export default function StudentDashboard() {
     useEffect(() => {
         async function fetchData() {
             try {
-                const [userData, statusData] = await Promise.all([
+                const [userData, statusData, analysisData] = await Promise.all([
                     api.getMe(),
                     api.getProfileStatus(),
+                    api.getResumeAnalysis(),
                 ]);
                 setUser(userData);
                 setProfileStatus(statusData);
+                setResumeAnalysis(analysisData);
             } catch (error) {
                 console.error('Failed to fetch data:', error);
             } finally {
@@ -175,6 +178,81 @@ export default function StudentDashboard() {
                             <p className="text-slate-500">Target: 70%</p>
                         </div>
                     </div>
+                </div>
+            </div>
+
+            {/* Resume Analysis */}
+            <div className="card p-6 border-emerald-800/20 bg-gradient-to-br from-emerald-900/10 to-slate-900/40">
+                <div className="flex items-center justify-between">
+                    <div>
+                        <h3 className="text-sm font-bold uppercase tracking-wider text-emerald-300">Resume Score</h3>
+                        <p className="text-xs text-slate-400 mt-1">AI analysis of your latest resume</p>
+                    </div>
+                    <div className="text-2xl font-bold font-mono text-emerald-400">
+                        {resumeAnalysis ? `${Math.round(resumeAnalysis.resume_score)}%` : '--'}
+                    </div>
+                </div>
+                <div className="mt-3 h-1.5 bg-slate-700 rounded-full overflow-hidden">
+                    <div
+                        className="h-full rounded-full bg-gradient-to-r from-emerald-500 to-teal-500 transition-all duration-500"
+                        style={{ width: `${resumeAnalysis ? Math.min(100, Math.max(0, resumeAnalysis.resume_score)) : 0}%` }}
+                    />
+                </div>
+                {resumeAnalysis ? (
+                    <div className="mt-4 grid grid-cols-2 md:grid-cols-4 gap-3 text-xs">
+                        <div className="bg-slate-800/60 rounded-sm p-2">
+                            <p className="text-slate-400">Skill Match</p>
+                            <p className="text-emerald-300 font-mono">{Math.round(resumeAnalysis.skill_match_score)}%</p>
+                        </div>
+                        <div className="bg-slate-800/60 rounded-sm p-2">
+                            <p className="text-slate-400">ATS</p>
+                            <p className="text-emerald-300 font-mono">{Math.round(resumeAnalysis.ats_score)}%</p>
+                        </div>
+                        <div className="bg-slate-800/60 rounded-sm p-2">
+                            <p className="text-slate-400">Content</p>
+                            <p className="text-emerald-300 font-mono">{Math.round(resumeAnalysis.content_score)}%</p>
+                        </div>
+                        <div className="bg-slate-800/60 rounded-sm p-2">
+                            <p className="text-slate-400">Projects</p>
+                            <p className="text-emerald-300 font-mono">{Math.round(resumeAnalysis.project_score)}%</p>
+                        </div>
+                    </div>
+                ) : (
+                    <p className="text-xs text-slate-400 mt-4">Upload a resume to see analysis.</p>
+                )}
+                {resumeAnalysis?.suggestions?.length ? (
+                    <div className="mt-4">
+                        <p className="text-xs text-slate-400 uppercase tracking-wider">Suggestions</p>
+                        <ul className="mt-2 space-y-1 text-sm text-slate-300">
+                            {resumeAnalysis.suggestions.slice(0, 5).map((s, i) => (
+                                <li key={`${s}-${i}`} className="flex gap-2">
+                                    <span className="text-emerald-400">•</span>
+                                    <span>{s}</span>
+                                </li>
+                            ))}
+                        </ul>
+                    </div>
+                ) : null}
+            </div>
+
+            {/* Start Interview CTA */}
+            <div className="card p-6 border-purple-800/30 bg-gradient-to-br from-purple-900/15 to-slate-900/40">
+                <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
+                    <div className="flex items-center gap-4">
+                        <div className="p-3 rounded-lg bg-purple-600">
+                            <Microphone size={24} className="text-white" weight="duotone" />
+                        </div>
+                        <div>
+                            <h3 className="text-sm font-bold uppercase tracking-wider text-purple-300">Start Interview</h3>
+                            <p className="text-xs text-slate-400 mt-1">Experience a real-time AI interview with voice + feedback</p>
+                        </div>
+                    </div>
+                    <button
+                        onClick={() => { hapticImpact(); router.push('/dashboard/student/interview'); }}
+                        className="btn-primary flex items-center justify-center gap-2 btn-ripple"
+                    >
+                        <Microphone size={18} /> Start Interview
+                    </button>
                 </div>
             </div>
 

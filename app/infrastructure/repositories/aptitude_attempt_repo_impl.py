@@ -5,11 +5,12 @@ from typing import List, Optional, Dict, Any
 from uuid import uuid4
 from datetime import datetime
 
-from sqlalchemy import select, func, and_
+from sqlalchemy import select, func, and_, cast, String
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import delete
 
 from app.infrastructure.database.models import AptitudeAttempt, User
-from app.core.constants import AptitudeCategory
+from app.core.constants import AptitudeCategory, DifficultyLevel, AptitudeMode, AttemptStatus
 
 
 class AptitudeAttemptRepositoryImpl:
@@ -23,6 +24,12 @@ class AptitudeAttemptRepositoryImpl:
         user_id: str,
         total_questions: int,
         category: Optional[AptitudeCategory] = None,
+        difficulty: Optional[DifficultyLevel] = None,
+        mode: AptitudeMode = AptitudeMode.PRACTICE,
+        status: AttemptStatus = AttemptStatus.IN_PROGRESS,
+        question_ids: Optional[list] = None,
+        option_orders: Optional[dict] = None,
+        generated_questions: Optional[dict] = None,
         started_at: Optional[datetime] = None,
     ) -> AptitudeAttempt:
         """Create a new aptitude attempt."""
@@ -31,6 +38,12 @@ class AptitudeAttemptRepositoryImpl:
             user_id=user_id,
             total_questions=total_questions,
             category=category,
+            difficulty=difficulty,
+            mode=mode,
+            status=status,
+            question_ids=question_ids,
+            option_orders=option_orders,
+            generated_questions=generated_questions,
             started_at=started_at or datetime.utcnow(),
             answers={},
             score=0.0,
@@ -81,6 +94,21 @@ class AptitudeAttemptRepositoryImpl:
         result = await self.db.execute(query)
         return list(result.scalars().all())
 
+    async def get_active_attempt(self, user_id: str) -> Optional[AptitudeAttempt]:
+        """Get the most recent active attempt for a user."""
+        query = (
+            select(AptitudeAttempt)
+            .where(
+                AptitudeAttempt.user_id == user_id,
+                AptitudeAttempt.completed_at.is_(None),
+                cast(AptitudeAttempt.status, String) == AttemptStatus.IN_PROGRESS.value,
+            )
+            .order_by(AptitudeAttempt.started_at.desc())
+            .limit(1)
+        )
+        result = await self.db.execute(query)
+        return result.scalar_one_or_none()
+
     async def get_topic_analysis(self, user_id: str) -> Dict[str, Any]:
         """
         Analyze performance across different categories based on all attempts.
@@ -99,9 +127,10 @@ class AptitudeAttemptRepositoryImpl:
                 if cat not in analysis:
                     analysis[cat] = {'correct': 0, 'total': 0}
                 
-                analysis[cat]['total'] += 1
+                weight = data.get('marks', 1) or 1
+                analysis[cat]['total'] += weight
                 if data.get('is_correct'):
-                    analysis[cat]['correct'] += 1
+                    analysis[cat]['correct'] += weight
                     
         # Calculate percentage for each topic
         final_analysis = []
@@ -135,3 +164,11 @@ class AptitudeAttemptRepositoryImpl:
             "average_score": round(float(row.avg_score or 0), 1),
             "best_score": round(float(row.best_score or 0), 1)
         }
+
+    async def delete_by_id(self, attempt_id: str) -> bool:
+        """Delete an attempt by ID."""
+        await self.db.execute(
+            delete(AptitudeAttempt).where(AptitudeAttempt.id == attempt_id)
+        )
+        await self.db.commit()
+        return True

@@ -27,10 +27,17 @@ from app.core.constants import (
     AptitudeCategory,
     DifficultyLevel,
     InterviewType,
+    InterviewMode,
+    InterviewStatus,
     PlacementDriveStatus,
     ApplicationStatus,
+    DriveAssessmentStatus,
     CodingLanguage,
     ProfileStatus,
+    QuestionStatus,
+    QuestionApprovalStatus,
+    AptitudeMode,
+    AttemptStatus,
 )
 
 
@@ -157,6 +164,35 @@ class Resume(Base):
         return f"<Resume {self.id[:8]} - {self.original_filename}>"
 
 
+class ResumeAnalysis(Base):
+    """AI resume analysis results."""
+    
+    __tablename__ = "resume_analysis"
+    
+    id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=lambda: str(uuid4()))
+    student_id: Mapped[str] = mapped_column(UUID(as_uuid=False), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    resume_id: Mapped[Optional[str]] = mapped_column(UUID(as_uuid=False), nullable=True)
+    preferred_role: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    
+    # Scores (0-100)
+    resume_score: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
+    skill_match_score: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
+    ats_score: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
+    content_score: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
+    project_score: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
+    
+    # Analysis output
+    extracted_skills: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True, default=list)
+    missing_skills: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True, default=list)
+    suggestions: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True, default=list)
+    structured_data: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True, default=dict)
+    
+    analyzed_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    
+    def __repr__(self) -> str:
+        return f"<ResumeAnalysis {self.id[:8]} - Score: {self.resume_score}>"
+
+
 class AptitudeQuestion(Base):
     """Aptitude test question model."""
     
@@ -171,6 +207,28 @@ class AptitudeQuestion(Base):
     correct_option: Mapped[str] = mapped_column(String(1), nullable=False)  # A, B, C, or D
     explanation: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     
+    # Additional metadata
+    sub_topic: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    role_tag: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    marks: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    time_limit_seconds: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    status: Mapped[QuestionStatus] = mapped_column(
+        Enum(QuestionStatus),
+        default=QuestionStatus.ACTIVE,
+        nullable=False,
+        index=True,
+    )
+    approval_status: Mapped[QuestionApprovalStatus] = mapped_column(
+        Enum(QuestionApprovalStatus),
+        default=QuestionApprovalStatus.APPROVED,
+        nullable=False,
+        index=True,
+    )
+    approved_by: Mapped[Optional[str]] = mapped_column(UUID(as_uuid=False), ForeignKey("users.id"), nullable=True)
+    approved_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    version_number: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    previous_version_id: Mapped[Optional[str]] = mapped_column(UUID(as_uuid=False), nullable=True)
+    
     # Metadata
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     created_by: Mapped[Optional[str]] = mapped_column(UUID(as_uuid=False), ForeignKey("users.id"), nullable=True)
@@ -179,6 +237,40 @@ class AptitudeQuestion(Base):
     
     def __repr__(self) -> str:
         return f"<AptitudeQuestion {self.id[:8]} - {self.category.value}>"
+
+
+class AptitudeQuestionVersion(Base):
+    """Version history for aptitude questions."""
+    
+    __tablename__ = "aptitude_question_versions"
+    
+    id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=lambda: str(uuid4()))
+    question_id: Mapped[str] = mapped_column(UUID(as_uuid=False), ForeignKey("aptitude_questions.id", ondelete="CASCADE"), nullable=False, index=True)
+    version_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    snapshot: Mapped[dict] = mapped_column(JSON, nullable=False)
+    changed_by: Mapped[Optional[str]] = mapped_column(UUID(as_uuid=False), ForeignKey("users.id"), nullable=True)
+    change_reason: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    changed_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    
+    def __repr__(self) -> str:
+        return f"<AptitudeQuestionVersion {self.id[:8]} v{self.version_number}>"
+
+
+class AptitudeQuestionAuditLog(Base):
+    """Audit log for aptitude question actions."""
+    
+    __tablename__ = "aptitude_question_audit_logs"
+    
+    id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=lambda: str(uuid4()))
+    question_id: Mapped[Optional[str]] = mapped_column(UUID(as_uuid=False), nullable=True, index=True)
+    action: Mapped[str] = mapped_column(String(50), nullable=False)
+    actor_id: Mapped[Optional[str]] = mapped_column(UUID(as_uuid=False), ForeignKey("users.id"), nullable=True)
+    before_data: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    after_data: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    
+    def __repr__(self) -> str:
+        return f"<AptitudeQuestionAuditLog {self.id[:8]} {self.action}>"
 
 
 class AptitudeAttempt(Base):
@@ -191,6 +283,9 @@ class AptitudeAttempt(Base):
     
     # Test Info
     category: Mapped[Optional[AptitudeCategory]] = mapped_column(Enum(AptitudeCategory), nullable=True)  # None = mixed
+    difficulty: Mapped[Optional[DifficultyLevel]] = mapped_column(Enum(DifficultyLevel, native_enum=False), nullable=True)
+    mode: Mapped[AptitudeMode] = mapped_column(Enum(AptitudeMode, native_enum=False), default=AptitudeMode.PRACTICE, nullable=False)
+    status: Mapped[AttemptStatus] = mapped_column(Enum(AttemptStatus, native_enum=False), default=AttemptStatus.IN_PROGRESS, nullable=False)
     total_questions: Mapped[int] = mapped_column(Integer, nullable=False)
     correct_answers: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     wrong_answers: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
@@ -202,6 +297,9 @@ class AptitudeAttempt(Base):
     
     # Answers stored as JSON: {"question_id": {"selected": "A", "is_correct": true}, ...}
     answers: Mapped[dict] = mapped_column(JSON, nullable=True, default=dict)
+    question_ids: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)
+    option_orders: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    generated_questions: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
     
     # Timestamps
     started_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
@@ -209,9 +307,36 @@ class AptitudeAttempt(Base):
     
     # Relationships
     user: Mapped["User"] = relationship("User", back_populates="aptitude_attempts")
+    details: Mapped[List["AptitudeAttemptDetail"]] = relationship(
+        "AptitudeAttemptDetail", back_populates="attempt", cascade="all, delete-orphan"
+    )
     
     def __repr__(self) -> str:
         return f"<AptitudeAttempt {self.id[:8]} - Score: {self.score}%>"
+
+
+class AptitudeAttemptDetail(Base):
+    """Detailed per-question attempt record."""
+
+    __tablename__ = "aptitude_attempt_details"
+
+    id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=lambda: str(uuid4()))
+    attempt_id: Mapped[str] = mapped_column(UUID(as_uuid=False), ForeignKey("aptitude_attempts.id", ondelete="CASCADE"), nullable=False, index=True)
+    question_id: Mapped[Optional[str]] = mapped_column(UUID(as_uuid=False), ForeignKey("aptitude_questions.id", ondelete="CASCADE"), nullable=True, index=True)
+    question_text: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    options: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    generated: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    selected_option: Mapped[Optional[str]] = mapped_column(String(1), nullable=True)
+    correct_option: Mapped[str] = mapped_column(String(1), nullable=False)
+    is_correct: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    marks: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    category: Mapped[str] = mapped_column(String(50), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+
+    attempt: Mapped["AptitudeAttempt"] = relationship("AptitudeAttempt", back_populates="details")
+
+    def __repr__(self) -> str:
+        return f"<AptitudeAttemptDetail {self.id[:8]} Q:{self.question_id[:8]}>"
 
 
 class InterviewSession(Base):
@@ -223,6 +348,22 @@ class InterviewSession(Base):
     user_id: Mapped[str] = mapped_column(UUID(as_uuid=False), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
     
     interview_type: Mapped[InterviewType] = mapped_column(Enum(InterviewType), nullable=False)
+    mode: Mapped[InterviewMode] = mapped_column(
+        Enum(InterviewMode, native_enum=False),
+        default=InterviewMode.TEXT,
+        nullable=False,
+    )
+    difficulty: Mapped[DifficultyLevel] = mapped_column(
+        Enum(DifficultyLevel, native_enum=False),
+        default=DifficultyLevel.MEDIUM,
+        nullable=False,
+    )
+    status: Mapped[InterviewStatus] = mapped_column(
+        Enum(InterviewStatus, native_enum=False),
+        default=InterviewStatus.IN_PROGRESS,
+        nullable=False,
+        index=True,
+    )
     target_role: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
     target_company: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
     
@@ -246,9 +387,48 @@ class InterviewSession(Base):
     
     # Relationships
     user: Mapped["User"] = relationship("User", back_populates="interview_sessions")
+    answers: Mapped[List["InterviewAnswer"]] = relationship(
+        "InterviewAnswer", back_populates="session", cascade="all, delete-orphan"
+    )
     
     def __repr__(self) -> str:
         return f"<InterviewSession {self.id[:8]} - {self.interview_type.value}>"
+
+
+class InterviewAnswer(Base):
+    """Per-question interview answer with evaluation."""
+
+    __tablename__ = "interview_answers"
+
+    id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=lambda: str(uuid4()))
+    session_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("interview_sessions.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    user_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+
+    question_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    question_text: Mapped[str] = mapped_column(Text, nullable=False)
+    answer_text: Mapped[str] = mapped_column(Text, nullable=False)
+
+    evaluation: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True, default=dict)
+    overall_score: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
+    relevance_score: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
+    clarity_score: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
+    depth_score: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
+    confidence_score: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
+
+    feedback: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    strengths: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True, default=list)
+    improvements: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True, default=list)
+
+    answered_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+
+    session: Mapped["InterviewSession"] = relationship("InterviewSession", back_populates="answers")
+
+    def __repr__(self) -> str:
+        return f"<InterviewAnswer {self.id[:8]} Q{self.question_number}>"
 
 
 class CodingProblem(Base):
@@ -340,6 +520,23 @@ class PlacementDrive(Base):
     # Schedule
     registration_deadline: Mapped[datetime] = mapped_column(DateTime, nullable=False)
     drive_date: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+
+    # Assessments
+    aptitude_test_required: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    aptitude_question_count: Mapped[int] = mapped_column(Integer, default=10, nullable=False)
+    aptitude_difficulty: Mapped[Optional[DifficultyLevel]] = mapped_column(
+        Enum(DifficultyLevel, native_enum=False),
+        nullable=True,
+    )
+    aptitude_pass_percentage: Mapped[float] = mapped_column(Float, default=60.0, nullable=False)
+
+    technical_test_required: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    technical_question_count: Mapped[int] = mapped_column(Integer, default=10, nullable=False)
+    technical_difficulty: Mapped[Optional[DifficultyLevel]] = mapped_column(
+        Enum(DifficultyLevel, native_enum=False),
+        nullable=True,
+    )
+    technical_pass_percentage: Mapped[float] = mapped_column(Float, default=60.0, nullable=False)
     
     # Status
     status: Mapped[PlacementDriveStatus] = mapped_column(
@@ -373,6 +570,22 @@ class DriveApplication(Base):
     status: Mapped[ApplicationStatus] = mapped_column(
         Enum(ApplicationStatus), default=ApplicationStatus.PENDING, nullable=False
     )
+
+    # Assessment tracking
+    aptitude_attempt_id: Mapped[Optional[str]] = mapped_column(UUID(as_uuid=False), nullable=True)
+    aptitude_status: Mapped[DriveAssessmentStatus] = mapped_column(
+        Enum(DriveAssessmentStatus, native_enum=False),
+        default=DriveAssessmentStatus.NOT_STARTED,
+        nullable=False,
+    )
+    aptitude_score: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    technical_attempt_id: Mapped[Optional[str]] = mapped_column(UUID(as_uuid=False), nullable=True)
+    technical_status: Mapped[DriveAssessmentStatus] = mapped_column(
+        Enum(DriveAssessmentStatus, native_enum=False),
+        default=DriveAssessmentStatus.NOT_STARTED,
+        nullable=False,
+    )
+    technical_score: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     
     # Application data
     resume_url: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)

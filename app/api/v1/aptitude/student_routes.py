@@ -13,7 +13,9 @@ from app.core.constants import UserRole
 from app.api.v1.aptitude.attempt_schemas import (
     StartAssessmentRequest,
     SubmitAssessmentRequest,
+    AutoSaveAssessmentRequest,
     AssessmentStartResponse,
+    ActiveAssessmentResponse,
     QuestionBrief,
     AttemptResponse,
     AttemptDetailResponse,
@@ -34,17 +36,56 @@ async def start_assessment(
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Students only")
         
     service = AptitudeAttemptService(db)
-    attempt, questions = await service.start_assessment(
-        user_id=current_user.id,
-        category=data.category,
-        count=data.count
-    )
+    try:
+        attempt, questions = await service.start_assessment(
+            user_id=current_user.id,
+            category=data.category,
+            count=data.count,
+            difficulty=data.difficulty,
+            mode=data.mode,
+            resume_question_count=data.resume_question_count,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
     
     return AssessmentStartResponse(
         attempt_id=attempt.id,
-        questions=[QuestionBrief.model_validate(q) for q in questions],
+        questions=questions,
         total_questions=len(questions),
-        started_at=attempt.started_at
+        started_at=attempt.started_at,
+        mode=attempt.mode,
+        category=attempt.category.value if attempt.category else None,
+        difficulty=attempt.difficulty.value if attempt.difficulty else None,
+    )
+
+
+@router.get("/active", response_model=ActiveAssessmentResponse)
+async def get_active_assessment(
+    db: AsyncSession = Depends(get_db_session),
+    current_user: User = Depends(get_current_user),
+):
+    """Resume an active assessment if one exists."""
+    if current_user.role != UserRole.STUDENT:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Students only")
+
+    service = AptitudeAttemptService(db)
+    try:
+        attempt, questions, user_answers = await service.get_active_attempt(current_user.id)
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_410_GONE, detail=str(e))
+
+    if not attempt:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No active attempt")
+
+    return ActiveAssessmentResponse(
+        attempt_id=attempt.id,
+        questions=questions,
+        total_questions=len(questions),
+        started_at=attempt.started_at,
+        mode=attempt.mode,
+        category=attempt.category.value if attempt.category else None,
+        difficulty=attempt.difficulty.value if attempt.difficulty else None,
+        user_answers=user_answers,
     )
 
 
@@ -65,6 +106,26 @@ async def submit_assessment(
             time_taken_seconds=data.time_taken_seconds
         )
         return AttemptResponse.model_validate(attempt)
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+
+
+@router.post("/autosave/{attempt_id}")
+async def autosave_assessment(
+    attempt_id: str,
+    data: AutoSaveAssessmentRequest,
+    db: AsyncSession = Depends(get_db_session),
+    current_user: User = Depends(get_current_user),
+):
+    """Autosave partial answers."""
+    service = AptitudeAttemptService(db)
+    try:
+        await service.autosave_answers(
+            attempt_id=attempt_id,
+            user_id=current_user.id,
+            user_answers=data.user_answers,
+        )
+        return {"success": True}
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
 
@@ -108,6 +169,23 @@ async def get_attempt_detail(
         completed_at=attempt.completed_at,
         detailed_answers=details["detailed_answers"]
     )
+
+
+@router.delete("/attempts/{attempt_id}")
+async def discard_attempt(
+    attempt_id: str,
+    db: AsyncSession = Depends(get_db_session),
+    current_user: User = Depends(get_current_user),
+):
+    """Discard an active attempt."""
+    if current_user.role != UserRole.STUDENT:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Students only")
+    service = AptitudeAttemptService(db)
+    try:
+        await service.discard_attempt(attempt_id, current_user.id)
+        return {"success": True}
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
 
 
 @router.get("/dashboard", response_model=StudentAptitudeDashboard)

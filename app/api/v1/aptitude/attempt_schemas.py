@@ -5,7 +5,7 @@ from datetime import datetime
 from typing import Optional, List, Dict, Any
 from pydantic import BaseModel, Field
 
-from app.core.constants import AptitudeCategory
+from app.core.constants import AptitudeCategory, DifficultyLevel, AptitudeMode, AttemptStatus
 
 
 # Request Schemas
@@ -13,12 +13,20 @@ class StartAssessmentRequest(BaseModel):
     """Request to start a new assessment."""
     category: Optional[AptitudeCategory] = None
     count: int = Field(10, ge=5, le=50)
+    difficulty: Optional[DifficultyLevel] = None
+    mode: AptitudeMode = AptitudeMode.PRACTICE
+    resume_question_count: Optional[int] = Field(None, ge=0, le=50)
 
 
 class SubmitAssessmentRequest(BaseModel):
     """Request to submit assessment answers."""
     user_answers: Dict[str, Optional[str]] # question_id -> selected_option (A, B, C, D or None)
     time_taken_seconds: int = Field(..., ge=0)
+
+
+class AutoSaveAssessmentRequest(BaseModel):
+    """Autosave partial answers during an attempt."""
+    user_answers: Dict[str, Optional[str]]
 
 
 # Response Schemas
@@ -28,6 +36,10 @@ class QuestionBrief(BaseModel):
     question_text: str
     options: Dict[str, str]
     category: str
+    difficulty: str
+    sub_topic: Optional[str] = None
+    marks: int = 1
+    time_limit_seconds: Optional[int] = None
 
     class Config:
         from_attributes = True
@@ -39,6 +51,21 @@ class AssessmentStartResponse(BaseModel):
     questions: List[QuestionBrief]
     total_questions: int
     started_at: datetime
+    mode: AptitudeMode
+    category: Optional[str] = None
+    difficulty: Optional[str] = None
+
+
+class ActiveAssessmentResponse(BaseModel):
+    """Response for resuming an active assessment."""
+    attempt_id: str
+    questions: List[QuestionBrief]
+    total_questions: int
+    started_at: datetime
+    mode: AptitudeMode
+    category: Optional[str] = None
+    difficulty: Optional[str] = None
+    user_answers: Dict[str, Optional[str]]
 
 
 class AttemptResponse(BaseModel):
@@ -46,7 +73,11 @@ class AttemptResponse(BaseModel):
     id: str
     category: Optional[str]
     total_questions: int
+    correct_answers: int = 0
+    wrong_answers: int = 0
+    skipped: int = 0
     score: float
+    time_taken_seconds: int = 0
     completed_at: Optional[datetime]
     started_at: datetime
 
@@ -62,6 +93,7 @@ class DetailedAnswer(BaseModel):
     correct_option: str
     selected_option: Optional[str]
     is_correct: bool
+    marks: Optional[int] = None
     explanation: Optional[str]
     category: str
 

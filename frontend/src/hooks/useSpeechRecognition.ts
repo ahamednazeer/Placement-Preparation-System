@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useCallback, useEffect, useRef } from 'react';
-import { Capacitor } from '@capacitor/core';
+import { Capacitor, registerPlugin } from '@capacitor/core';
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
 
@@ -13,6 +13,8 @@ interface SpeechRecognitionPlugin {
     stop(): Promise<void>;
     addListener(eventName: 'partialResults', callback: (data: { matches: string[] }) => void): Promise<{ remove: () => void }>;
 }
+
+const SpeechRecognition = registerPlugin<SpeechRecognitionPlugin>('SpeechRecognition');
 
 interface UseSpeechRecognitionReturn {
     isListening: boolean;
@@ -30,7 +32,7 @@ export function useSpeechRecognition(): UseSpeechRecognitionReturn {
     const [isListening, setIsListening] = useState(false);
     const [transcript, setTranscript] = useState('');
     const [interimTranscript, setInterimTranscript] = useState('');
-    const [isSupported, setIsSupported] = useState(true); // Default to true, will detect
+    const [isSupported, setIsSupported] = useState(true);
     const [error, setError] = useState<string | null>(null);
     const [isProcessing, setIsProcessing] = useState(false);
 
@@ -38,6 +40,7 @@ export function useSpeechRecognition(): UseSpeechRecognitionReturn {
     const listenerRef = useRef<{ remove: () => void } | null>(null);
     const mediaRecorderRef = useRef<MediaRecorder | null>(null);
     const audioChunksRef = useRef<Blob[]>([]);
+    const mimeTypeRef = useRef<string>('audio/webm');
 
     const isNative = Capacitor.isNativePlatform();
 
@@ -45,19 +48,15 @@ export function useSpeechRecognition(): UseSpeechRecognitionReturn {
     useEffect(() => {
         const init = async () => {
             if (isNative) {
-                // Try to load Capacitor Speech Recognition
                 try {
-                    const { SpeechRecognition } = await import('@capacitor-community/speech-recognition');
-                    capacitorPluginRef.current = SpeechRecognition as unknown as SpeechRecognitionPlugin;
+                    capacitorPluginRef.current = SpeechRecognition;
                     const { available } = await capacitorPluginRef.current.available();
                     setIsSupported(available);
                 } catch (e) {
                     console.warn('Capacitor Speech Recognition not available:', e);
-                    // Fall back to MediaRecorder
                     setIsSupported(!!navigator.mediaDevices);
                 }
             } else {
-                // Web: Always use MediaRecorder for HTTP compatibility
                 setIsSupported(!!navigator.mediaDevices);
             }
         };
@@ -76,31 +75,57 @@ export function useSpeechRecognition(): UseSpeechRecognitionReturn {
 
     // Transcribe audio using backend Whisper API
     const transcribeAudio = async (audioBlob: Blob): Promise<string> => {
+        // Determine file extension from MIME type
+        const mimeToExt: Record<string, string> = {
+            'audio/webm': '.webm',
+            'audio/webm;codecs=opus': '.webm',
+            'audio/mp4': '.m4a',
+            'audio/mpeg': '.mp3',
+            'audio/ogg': '.ogg',
+        };
+        const ext = mimeToExt[audioBlob.type] || '.webm';
+        const filename = `recording${ext}`;
+
+        console.log('[SpeechRecognition] Preparing transcription:', {
+            blobSize: audioBlob.size,
+            blobType: audioBlob.type,
+            filename: filename,
+            apiUrl: `${API_BASE_URL}/api/v1/interview/transcribe`
+        });
+
         const formData = new FormData();
-        formData.append('file', audioBlob, 'recording.webm');
+        formData.append('file', audioBlob, filename);
 
         // Get token from localStorage
         const token = typeof window !== 'undefined' ? localStorage.getItem('access_token') : null;
+        console.log('[SpeechRecognition] Auth token present:', !!token);
+
         const headers: HeadersInit = {};
         if (token) {
             headers['Authorization'] = `Bearer ${token}`;
         }
 
         try {
+            console.log('[SpeechRecognition] Sending request to backend...');
             const response = await fetch(`${API_BASE_URL}/api/v1/interview/transcribe`, {
                 method: 'POST',
                 headers: headers,
                 body: formData,
             });
 
+            console.log('[SpeechRecognition] Response status:', response.status);
+
             if (!response.ok) {
-                throw new Error('Transcription failed');
+                const errorText = await response.text();
+                console.error('[SpeechRecognition] Transcription failed:', response.status, errorText);
+                throw new Error(`Transcription failed: ${response.status}`);
             }
 
             const data = await response.json();
+            console.log('[SpeechRecognition] Transcription result:', data);
             return data.text || '';
         } catch (e) {
-            console.error('Transcription error:', e);
+            console.error('[SpeechRecognition] Transcription error:', e);
             throw e;
         }
     };
@@ -110,8 +135,20 @@ export function useSpeechRecognition(): UseSpeechRecognitionReturn {
         try {
             const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
 
+            // Prefer webm, but fallback to mp4 for Android compatibility
+            const preferredMime = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
+                ? 'audio/webm;codecs=opus'
+                : MediaRecorder.isTypeSupported('audio/webm')
+                    ? 'audio/webm'
+                    : MediaRecorder.isTypeSupported('audio/mp4')
+                        ? 'audio/mp4'
+                        : 'audio/mpeg';
+
+            mimeTypeRef.current = preferredMime;
+            console.log('[SpeechRecognition] Using MIME type:', preferredMime);
+
             const mediaRecorder = new MediaRecorder(stream, {
-                mimeType: MediaRecorder.isTypeSupported('audio/webm') ? 'audio/webm' : 'audio/mp4'
+                mimeType: preferredMime
             });
 
             audioChunksRef.current = [];
@@ -126,8 +163,10 @@ export function useSpeechRecognition(): UseSpeechRecognitionReturn {
                 // Stop all tracks
                 stream.getTracks().forEach(track => track.stop());
 
-                // Create audio blob
-                const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
+                // Create audio blob with actual recorded MIME type
+                const actualMimeType = mimeTypeRef.current;
+                const audioBlob = new Blob(audioChunksRef.current, { type: actualMimeType });
+                console.log('[SpeechRecognition] Audio recorded - size:', audioBlob.size, 'type:', actualMimeType, 'chunks:', audioChunksRef.current.length);
 
                 // Only transcribe if we have audio
                 if (audioBlob.size > 0) {
@@ -135,16 +174,21 @@ export function useSpeechRecognition(): UseSpeechRecognitionReturn {
                     setInterimTranscript('Processing...');
 
                     try {
+                        console.log('[SpeechRecognition] Starting transcription...');
                         const text = await transcribeAudio(audioBlob);
+                        console.log('[SpeechRecognition] Got transcription text:', text);
                         if (text) {
                             setTranscript(prev => prev + text + ' ');
                         }
                     } catch (e) {
+                        console.error('[SpeechRecognition] Transcription failed:', e);
                         setError('Transcription failed. Please try again.');
                     } finally {
                         setIsProcessing(false);
                         setInterimTranscript('');
                     }
+                } else {
+                    console.warn('[SpeechRecognition] No audio data recorded!');
                 }
             };
 
@@ -163,30 +207,22 @@ export function useSpeechRecognition(): UseSpeechRecognitionReturn {
         setError(null);
         setInterimTranscript('');
 
-        if (isNative && capacitorPluginRef.current) {
+        // On Android, always use MediaRecorder + Whisper API
+        if (isNative) {
             try {
-                // Request permissions first
-                const { speechRecognition } = await capacitorPluginRef.current.requestPermissions();
-                if (speechRecognition !== 'granted') {
-                    setError('Microphone permission denied');
-                    return;
-                }
-
-                // Set up listener for partial results
-                listenerRef.current = await capacitorPluginRef.current.addListener('partialResults', (data) => {
-                    if (data.matches && data.matches.length > 0) {
-                        setInterimTranscript(data.matches[0]);
+                // Still request permissions via Capacitor if available
+                if (capacitorPluginRef.current) {
+                    const { speechRecognition } = await capacitorPluginRef.current.requestPermissions();
+                    if (speechRecognition !== 'granted') {
+                        setError('Microphone permission denied');
+                        return;
                     }
-                });
-
-                await capacitorPluginRef.current.start({
-                    language: 'en-US',
-                    partialResults: true,
-                });
-                setIsListening(true);
-            } catch (e) {
-                console.warn('Native STT failed, falling back to MediaRecorder:', e);
+                }
+                // Use MediaRecorder for more reliable audio capture + Whisper transcription
                 await startMediaRecording();
+            } catch (e) {
+                console.warn('Failed to start recording on mobile:', e);
+                setError('Failed to access microphone');
             }
         } else {
             // Web: Use MediaRecorder + backend Whisper
@@ -195,30 +231,22 @@ export function useSpeechRecognition(): UseSpeechRecognitionReturn {
     }, [isNative]);
 
     const stopListening = useCallback(async () => {
-        if (isNative && capacitorPluginRef.current) {
-            try {
-                await capacitorPluginRef.current.stop();
-                if (listenerRef.current) {
-                    listenerRef.current.remove();
-                    listenerRef.current = null;
-                }
-                // Move interim to final transcript
-                if (interimTranscript) {
-                    setTranscript(prev => prev + interimTranscript + ' ');
-                }
-            } catch (e) {
-                console.error('Failed to stop native speech recognition:', e);
-            }
-        }
-
-        // Stop MediaRecorder if active
+        // Stop MediaRecorder if active (both Android and Web use this now)
         if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+            // Set listening to false immediately for UI feedback
+            setIsListening(false);
+            // Show processing indicator while transcription happens
+            setInterimTranscript('Processing audio...');
+            // MediaRecorder.stop() triggers onstop handler which does transcription
             mediaRecorderRef.current.stop();
+            // Don't clear interimTranscript here - let onstop handler do it after transcription
+            return;
         }
 
+        // Fallback: if no MediaRecorder was active
         setIsListening(false);
         setInterimTranscript('');
-    }, [isNative, interimTranscript]);
+    }, []);
 
     const resetTranscript = useCallback(() => {
         setTranscript('');
