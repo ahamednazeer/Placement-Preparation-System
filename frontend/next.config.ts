@@ -1,8 +1,8 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
-  // Enable static export for Capacitor
-  output: 'export',
+  // Use 'standalone' for Docker, 'export' for Capacitor mobile builds
+  output: process.env.DOCKER_BUILD ? 'standalone' : 'export',
 
   // Disable image optimization for static export
   images: {

@@ -58,6 +58,77 @@ A comprehensive platform for placement preparation with AI-powered mock intervie
    python scripts/create_admin.py --demo
    ```
 
+### Frontend Setup (Next.js)
+
+1. **Navigate to frontend directory**:
+   ```bash
+   cd frontend
+   ```
+
+2. **Install dependencies**:
+   ```bash
+   npm install
+   # or
+   yarn install
+   ```
+
+3. **Configure environment**:
+   ```bash
+   cp .env.example .env.local
+   # Update .env.local if needed (defaults usually work for local dev)
+   ```
+
+4. **Run development server**:
+   ```bash
+   npm run dev
+   ```
+   Access the frontend at: http://localhost:3000
+
+### Mobile Setup (Android)
+
+1. **Prerequisites**:
+   - Android Studio (latest)
+   - JDK 17+
+   - Android SDK (API 33+)
+
+2. **Sync and Open**:
+   ```bash
+   cd frontend
+   
+   # Build web assets and sync to Android
+   npm run build:android
+   
+   # Open in Android Studio
+   npm run android
+   ```
+   
+   For detailed build instructions, see [frontend/ANDROID_BUILD.md](frontend/ANDROID_BUILD.md).
+
+3. **Build APK (Command Line)**:
+   ```bash
+   cd frontend/android
+   
+   # Build Debug APK
+   ./gradlew assembleDebug
+   # Output: frontend/android/app/build/outputs/apk/debug/app-debug.apk
+   
+   # Build Release APK (requires signing config)
+   ./gradlew assembleRelease
+   # Output: frontend/android/app/build/outputs/apk/release/app-release.apk
+   ```
+
+### Docker Setup
+
+1. **Run with Docker Compose**:
+   ```bash
+   docker-compose up --build
+   ```
+   
+   This will start:
+   - Backend at http://localhost:8000
+   - Frontend at http://localhost:3000
+   - PostgreSQL database
+
 ### API Documentation
 
 Once running, access the API docs at:
