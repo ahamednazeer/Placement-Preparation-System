@@ -9,7 +9,7 @@ from typing import Dict, Any, List, Optional
 from groq import Groq
 
 from app.core.config import settings
-from app.core.constants import InterviewType, DifficultyLevel, AptitudeCategory
+from app.core.constants import InterviewType, DifficultyLevel, AptitudeCategory, CodingLanguage
 from app.utils.logger import logger
 
 
@@ -277,6 +277,234 @@ Return a JSON object exactly like:
             raise ValueError("AI response did not contain a questions list")
 
         return questions
+
+    async def generate_coding_problem(
+        self,
+        difficulty: DifficultyLevel,
+        tags: Optional[List[str]] = None,
+        topic: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Generate a coding problem with test cases.
+        Returns a dict with problem fields.
+        """
+        if not settings.groq_api_key:
+            raise RuntimeError("Groq API key is not configured")
+
+        tags_text = ", ".join([str(t).strip() for t in (tags or []) if str(t).strip()]) or "Any"
+        topic_text = topic.strip() if topic and topic.strip() else "Any"
+
+        system_prompt = """You are a competitive programming problem writer.
+Return JSON only with the following fields:
+{
+  "title": "",
+  "description": "",
+  "difficulty": "EASY|MEDIUM|HARD",
+  "input_format": "",
+  "output_format": "",
+  "constraints": "",
+  "tags": ["arrays", "hashing"],
+  "time_limit_ms": 2000,
+  "memory_limit_mb": 256,
+  "test_cases": [
+    {"input": "...", "expected_output": "...", "is_sample": true}
+  ]
+}
+Rules:
+- Provide at least 6 test cases, with at least 2 marked as sample (is_sample=true)
+- Use deterministic inputs/outputs (no randomness)
+- Avoid interactive problems and floating-point precision traps
+- Keep input/output formats consistent and explicit
+- Keep constraints realistic for the difficulty
+- Do NOT include markdown formatting
+"""
+
+        user_prompt = f"""Generate one unique coding problem.
+DIFFICULTY: {difficulty.value}
+TOPIC: {topic_text}
+TAGS: {tags_text}
+
+Make the description clear and concise. Provide test cases as specified."""
+
+        response = self.client.chat.completions.create(
+            model=LLM_MODEL,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            temperature=0.6,
+            max_tokens=1400,
+            response_format={"type": "json_object"},
+        )
+
+        content = response.choices[0].message.content
+        data = json.loads(content) if content else {}
+        return data.get("problem", data if isinstance(data, dict) else {})
+
+    async def evaluate_coding_solution(
+        self,
+        problem: Dict[str, Any],
+        code: str,
+        language: CodingLanguage,
+    ) -> Dict[str, Any]:
+        """
+        Evaluate a coding solution using AI reasoning.
+        Returns JSON with verdict, tests_passed/total, feedback, and tips.
+        """
+        if not settings.groq_api_key:
+            raise RuntimeError("Groq API key is not configured")
+
+        test_cases = problem.get("test_cases") or []
+        if isinstance(test_cases, list):
+            test_cases = test_cases[:10]
+
+        system_prompt = """You are a strict programming judge.
+Evaluate the solution without executing code. Use reasoning on the provided test cases.
+Return JSON only:
+{
+  "verdict": "ACCEPTED|PARTIAL|WRONG_ANSWER|RUNTIME_ERROR|TIME_LIMIT|COMPILE_ERROR",
+  "tests_total": 0,
+  "tests_passed": 0,
+  "score": 0,
+  "feedback": "",
+  "key_issues": [],
+  "improvement_tips": [],
+  "complexity": { "time": "", "space": "" },
+  "failed_cases": [
+    {"input": "", "expected_output": "", "actual_output": "", "reason": ""}
+  ]
+}
+Guidelines:
+- If unsure, choose PARTIAL and explain.
+- Only mark ACCEPTED when you are confident all tests pass.
+- Keep feedback concise and actionable.
+- failed_cases can be empty if verdict is ACCEPTED."""
+
+        user_prompt = f"""PROBLEM:
+Title: {problem.get("title", "")}
+Description: {problem.get("description", "")}
+Input Format: {problem.get("input_format", "")}
+Output Format: {problem.get("output_format", "")}
+Constraints: {problem.get("constraints", "")}
+Tags: {", ".join(problem.get("tags") or [])}
+Test Cases (JSON):
+{json.dumps(test_cases)}
+
+LANGUAGE: {language.value if hasattr(language, "value") else language}
+CODE:
+{code}
+"""
+
+        try:
+            response = self.client.chat.completions.create(
+                model=LLM_MODEL,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+                temperature=0.2,
+                max_tokens=900,
+                response_format={"type": "json_object"},
+            )
+            return json.loads(response.choices[0].message.content)
+        except Exception as e:
+            logger.error(f"AI code evaluation failed: {e}")
+            return {
+                "verdict": "PARTIAL",
+                "tests_total": len(test_cases),
+                "tests_passed": 0,
+                "score": 0,
+                "feedback": "AI evaluation failed. Please try again.",
+                "key_issues": ["AI evaluation error"],
+                "improvement_tips": ["Retry after a short while"],
+                "complexity": {"time": "Unknown", "space": "Unknown"},
+                "failed_cases": [],
+            }
+
+    async def generate_coding_hint(
+        self,
+        problem: Dict[str, Any],
+        code: Optional[str] = None,
+        hint_level: str = "MEDIUM",
+    ) -> str:
+        """Generate a concise hint for a coding problem."""
+        if not settings.groq_api_key:
+            raise RuntimeError("Groq API key is not configured")
+
+        system_prompt = """You are a coding mentor.
+Provide a single concise hint without revealing the full solution.
+Keep it short (1-3 sentences)."""
+
+        code_text = code.strip() if code else ""
+        user_prompt = f"""Problem: {problem.get("title", "")}
+Description: {problem.get("description", "")}
+Input: {problem.get("input_format", "")}
+Output: {problem.get("output_format", "")}
+Constraints: {problem.get("constraints", "")}
+Hint Level: {hint_level}
+User Code (optional):
+{code_text}
+"""
+
+        try:
+            response = self.client.chat.completions.create(
+                model=LLM_MODEL,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+                temperature=0.5,
+                max_tokens=200,
+            )
+            return response.choices[0].message.content.strip()
+        except Exception as e:
+            logger.error(f"Failed to generate coding hint: {e}")
+            return "Try breaking the problem into smaller subproblems and focus on the required input/output format."
+
+    async def generate_coding_explanation(self, problem: Dict[str, Any]) -> Dict[str, Any]:
+        """Generate a solution outline with pseudocode and complexity."""
+        if not settings.groq_api_key:
+            raise RuntimeError("Groq API key is not configured")
+
+        system_prompt = """You are an expert algorithm instructor.
+Return JSON only:
+{
+  "approach": "",
+  "pseudocode": "",
+  "complexity": {"time": "", "space": ""},
+  "edge_cases": []
+}
+Keep the approach concise and avoid full code."""
+
+        user_prompt = f"""Explain the solution approach for this problem:
+Title: {problem.get("title", "")}
+Description: {problem.get("description", "")}
+Input: {problem.get("input_format", "")}
+Output: {problem.get("output_format", "")}
+Constraints: {problem.get("constraints", "")}
+Tags: {", ".join(problem.get("tags") or [])}
+"""
+
+        try:
+            response = self.client.chat.completions.create(
+                model=LLM_MODEL,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+                temperature=0.4,
+                max_tokens=700,
+                response_format={"type": "json_object"},
+            )
+            return json.loads(response.choices[0].message.content)
+        except Exception as e:
+            logger.error(f"Failed to generate coding explanation: {e}")
+            return {
+                "approach": "Outline a step-by-step strategy and validate against sample cases.",
+                "pseudocode": "Read input -> compute result -> print output",
+                "complexity": {"time": "Unknown", "space": "Unknown"},
+                "edge_cases": ["Empty input", "Minimum constraints"],
+            }
     
     async def generate_feedback_summary(
         self,

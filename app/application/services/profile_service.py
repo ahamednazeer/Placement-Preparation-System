@@ -7,6 +7,8 @@ from typing import Optional, Dict, Any, List
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.infrastructure.repositories.profile_repo_impl import ProfileRepositoryImpl
+from app.infrastructure.repositories.aptitude_attempt_repo_impl import AptitudeAttemptRepositoryImpl
+from app.infrastructure.repositories.coding_attempt_repo_impl import CodingAttemptRepositoryImpl
 from app.infrastructure.database.models import StudentProfile
 from app.core.constants import ProfileStatus
 from app.utils.logger import logger
@@ -29,6 +31,28 @@ class ProfileService:
         if not profile:
             # Create a profile if missing (legacy users or inconsistent data)
             profile = await self.profile_repo.create(user_id)
+
+        aptitude_score = profile.aptitude_score
+        coding_score = profile.coding_score
+
+        if aptitude_score == 0:
+            aptitude_repo = AptitudeAttemptRepositoryImpl(self.session)
+            stats = await aptitude_repo.get_overall_stats(user_id)
+            if stats.get("total_attempts", 0) > 0:
+                aptitude_score = stats.get("average_score", 0)
+                await self.profile_repo.update(user_id, aptitude_score=aptitude_score)
+
+        if coding_score == 0:
+            coding_repo = CodingAttemptRepositoryImpl(self.session)
+            stats = await coding_repo.get_overall_stats(user_id)
+            if stats.get("total_attempts", 0) > 0:
+                coding_score = stats.get("average_score", 0)
+                await self.profile_repo.update(user_id, coding_score=coding_score)
+
+        overall = profile.overall_readiness
+        if overall == 0 and (aptitude_score > 0 or profile.interview_score > 0 or coding_score > 0):
+            overall = round((aptitude_score + profile.interview_score + coding_score) / 3, 1)
+            await self.profile_repo.update(user_id, overall_readiness=overall)
         
         return {
             "id": profile.id,
@@ -49,10 +73,10 @@ class ProfileService:
             "github_url": profile.github_url,
             "portfolio_url": profile.portfolio_url,
             "profile_status": profile.profile_status.value,
-            "aptitude_score": profile.aptitude_score,
+            "aptitude_score": aptitude_score,
             "interview_score": profile.interview_score,
-            "coding_score": profile.coding_score,
-            "overall_readiness": profile.overall_readiness,
+            "coding_score": coding_score,
+            "overall_readiness": overall,
             "created_at": profile.created_at.isoformat(),
             "updated_at": profile.updated_at.isoformat(),
         }

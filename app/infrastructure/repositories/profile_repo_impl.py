@@ -41,7 +41,8 @@ class ProfileRepositoryImpl:
             'current_year', 'graduation_year', 'cgpa', 'technical_skills',
             'soft_skills', 'preferred_roles', 'preferred_domains',
             'resume_url', 'linkedin_url', 'github_url', 'portfolio_url',
-            'profile_status'
+            'profile_status',
+            'aptitude_score', 'interview_score', 'coding_score', 'overall_readiness',
         }
         
         update_data = {k: v for k, v in kwargs.items() if k in valid_fields}

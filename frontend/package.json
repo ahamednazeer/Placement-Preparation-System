@@ -59,6 +59,7 @@
     "typescript": "^5"
   },
   "optionalDependencies": {
+    "lightningcss-darwin-arm64": "1.29.1",
     "@next/swc-darwin-arm64": "^16.1.6",
     "@next/swc-darwin-x64": "^16.1.6"
   }

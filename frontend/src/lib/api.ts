@@ -406,6 +406,42 @@ class ApiClient {
         return this.request(`/api/v1/interview/${sessionId}/answers`);
     }
 
+    // Coding Practice Endpoints
+    async generateCodingProblem(data: CodingProblemGenerateRequest): Promise<CodingProblem> {
+        return this.request('/api/v1/coding/problems/ai-generate', {
+            method: 'POST',
+            body: JSON.stringify(data),
+        });
+    }
+
+    async getCodingProblem(problemId: string): Promise<CodingProblem> {
+        return this.request(`/api/v1/coding/problems/${problemId}`);
+    }
+
+    async submitCodingAttempt(data: CodingAttemptRequest): Promise<CodingAttemptResponse> {
+        return this.request('/api/v1/coding/attempts/submit', {
+            method: 'POST',
+            body: JSON.stringify(data),
+        });
+    }
+
+    async getCodingHint(problemId: string, data?: CodingHintRequest): Promise<CodingHintResponse> {
+        return this.request(`/api/v1/coding/problems/${problemId}/hint`, {
+            method: 'POST',
+            body: JSON.stringify(data || {}),
+        });
+    }
+
+    async getCodingExplanation(problemId: string): Promise<CodingExplanationResponse> {
+        return this.request(`/api/v1/coding/problems/${problemId}/explain`, {
+            method: 'POST',
+        });
+    }
+
+    async getCodingStats(): Promise<CodingStatsResponse> {
+        return this.request('/api/v1/coding/stats');
+    }
+
     // Placement Drives Endpoints
     async listDrives(params?: { status?: string; page?: number; page_size?: number }): Promise<DriveListResponse> {
         const query = new URLSearchParams();
@@ -991,6 +1027,7 @@ export interface StudentAptitudeDashboard {
 export type InterviewType = 'TECHNICAL' | 'HR' | 'BEHAVIORAL' | 'CASE_STUDY';
 export type InterviewMode = 'TEXT' | 'VOICE';
 export type DifficultyLevel = 'EASY' | 'MEDIUM' | 'HARD';
+export type CodingLanguage = 'PYTHON' | 'JAVA' | 'CPP' | 'JAVASCRIPT' | 'C';
 
 export interface StartInterviewRequest {
     interview_type: InterviewType;
@@ -1101,6 +1138,78 @@ export interface InterviewAnswerItem {
 export interface InterviewAnswerListResponse {
     session_id: string;
     answers: InterviewAnswerItem[];
+}
+
+export interface CodingTestCase {
+    input: string;
+    expected_output: string;
+    is_sample: boolean;
+}
+
+export interface CodingProblemGenerateRequest {
+    difficulty?: DifficultyLevel;
+    tags?: string[];
+    topic?: string;
+}
+
+export interface CodingProblem {
+    id: string;
+    title: string;
+    description: string;
+    difficulty: DifficultyLevel | string;
+    input_format?: string | null;
+    output_format?: string | null;
+    constraints?: string | null;
+    tags: string[];
+    time_limit_ms: number;
+    memory_limit_mb: number;
+    sample_test_cases: CodingTestCase[];
+}
+
+export interface CodingAttemptRequest {
+    problem_id: string;
+    language: CodingLanguage;
+    code: string;
+}
+
+export interface CodingHintRequest {
+    code?: string;
+    hint_level?: string;
+}
+
+export interface CodingHintResponse {
+    hint: string;
+}
+
+export interface CodingExplanationResponse {
+    approach: string;
+    pseudocode: string;
+    complexity: { time: string; space: string };
+    edge_cases: string[];
+}
+
+export interface CodingEvaluationResponse {
+    verdict: string;
+    score: number;
+    tests_total: number;
+    tests_passed: number;
+    feedback?: string;
+    key_issues?: string[];
+    improvement_tips?: string[];
+    complexity?: { time: string; space: string };
+    failed_cases?: { input: string; expected_output: string; actual_output?: string; reason?: string }[];
+}
+
+export interface CodingAttemptResponse {
+    attempt_id: string;
+    is_accepted: boolean;
+    evaluation: CodingEvaluationResponse;
+}
+
+export interface CodingStatsResponse {
+    total_attempts: number;
+    average_score: number;
+    best_score: number;
 }
 
 export const api = new ApiClient();

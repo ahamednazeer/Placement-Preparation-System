@@ -18,6 +18,7 @@ from app.api.v1.aptitude.student_routes import router as aptitude_student_router
 from app.api.v1.drives.routes import router as drives_router
 from app.api.v1.interview.routes import router as interview_router
 from app.api.v1.admin.routes import router as admin_router
+from app.api.v1.coding.routes import router as coding_router
 
 
 def create_application() -> FastAPI:
@@ -58,6 +59,7 @@ def create_application() -> FastAPI:
     app.include_router(drives_router, prefix=API_V1_PREFIX, tags=["Placement Drives"])
     app.include_router(interview_router, prefix=f"{API_V1_PREFIX}/interview", tags=["Mock Interview"])
     app.include_router(admin_router, prefix=API_V1_PREFIX, tags=["Admin"])
+    app.include_router(coding_router, prefix=f"{API_V1_PREFIX}/coding", tags=["Coding Practice"])
     
     # Health check endpoint
     @app.get("/health", tags=["Health"])

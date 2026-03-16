@@ -3,7 +3,7 @@
 import React, { useEffect, useState } from 'react';
 import { Brain, Microphone, Code, Buildings, Trophy, ChartLineUp, Clock, Target } from '@phosphor-icons/react';
 import { useRouter } from 'next/navigation';
-import { api, ResumeAnalysis } from '@/lib/api';
+import { api, ResumeAnalysis, ProfileResponse, StudentAptitudeDashboard, CodingStatsResponse } from '@/lib/api';
 import { useCapacitor } from '@/components/CapacitorProvider';
 import Skeleton from '@/components/Skeleton';
 
@@ -13,9 +13,11 @@ interface ScoreCardProps {
     icon: React.ElementType;
     color: string;
     href: string;
+    displayValue?: string;
+    progress?: number;
 }
 
-function ScoreCard({ title, score, icon: Icon, color, href }: ScoreCardProps) {
+function ScoreCard({ title, score, icon: Icon, color, href, displayValue, progress }: ScoreCardProps) {
     const router = useRouter();
     const { hapticImpact } = useCapacitor();
     const colorClasses: Record<string, string> = {
@@ -24,6 +26,8 @@ function ScoreCard({ title, score, icon: Icon, color, href }: ScoreCardProps) {
         purple: 'from-purple-600 to-purple-800 text-purple-400',
         orange: 'from-orange-600 to-orange-800 text-orange-400',
     };
+    const displayText = displayValue ?? `${score}%`;
+    const progressValue = typeof progress === 'number' ? progress : score;
 
     return (
         <div
@@ -35,14 +39,14 @@ function ScoreCard({ title, score, icon: Icon, color, href }: ScoreCardProps) {
                     <Icon size={24} weight="duotone" className="text-white" />
                 </div>
                 <div className={`text-2xl font-bold font-mono ${colorClasses[color]?.split(' ').slice(2).join(' ')}`}>
-                    {score}%
+                    {displayText}
                 </div>
             </div>
             <h3 className="text-sm font-medium text-slate-300 uppercase tracking-wider">{title}</h3>
             <div className="mt-3 h-1.5 bg-slate-700 rounded-full overflow-hidden">
                 <div
                     className={`h-full rounded-full bg-gradient-to-r ${colorClasses[color]?.split(' ').slice(0, 2).join(' ')} transition-all duration-500`}
-                    style={{ width: `${score}%` }}
+                    style={{ width: `${Math.max(0, Math.min(100, progressValue))}%` }}
                 />
             </div>
             <p className="text-xs text-slate-500 mt-2 group-hover:text-slate-400 transition-colors">
@@ -59,24 +63,73 @@ export default function StudentDashboard() {
     const [user, setUser] = useState<any>(null);
     const [profileStatus, setProfileStatus] = useState<{ is_complete: boolean; completion_percentage: number } | null>(null);
     const [resumeAnalysis, setResumeAnalysis] = useState<ResumeAnalysis | null>(null);
-    const [scores] = useState({
+    const [profile, setProfile] = useState<ProfileResponse | null>(null);
+    const [aptitudeStats, setAptitudeStats] = useState<StudentAptitudeDashboard | null>(null);
+    const [codingStats, setCodingStats] = useState<CodingStatsResponse | null>(null);
+    const [applicationStats, setApplicationStats] = useState<{ applied: number; total: number }>({ applied: 0, total: 0 });
+    const [scores, setScores] = useState({
         aptitude: 0,
         interview: 0,
         coding: 0,
         overall: 0,
     });
 
+    const displayedScores = {
+        aptitude: scores.aptitude > 0 ? scores.aptitude : Math.round(aptitudeStats?.average_score || 0),
+        interview: scores.interview,
+        coding: scores.coding > 0 ? scores.coding : Math.round(codingStats?.average_score || 0),
+    };
+    const applicationsProgress = applicationStats.total > 0
+        ? Math.round((applicationStats.applied / applicationStats.total) * 100)
+        : 0;
+    const applicationsLabel = applicationStats.total > 0
+        ? `${applicationStats.applied}/${applicationStats.total}`
+        : `${applicationStats.applied}`;
+    const displayedOverall = scores.overall > 0
+        ? scores.overall
+        : Math.round((displayedScores.aptitude + displayedScores.interview + displayedScores.coding) / 3 || 0);
+
     useEffect(() => {
         async function fetchData() {
             try {
-                const [userData, statusData, analysisData] = await Promise.all([
+                const results = await Promise.allSettled([
                     api.getMe(),
                     api.getProfileStatus(),
                     api.getResumeAnalysis(),
+                    api.getProfile(),
+                    api.getStudentAptitudeDashboard(),
+                    api.getCodingStats(),
+                    api.getMyApplications(),
+                    api.listDrives({ page: 1, page_size: 1 }),
                 ]);
-                setUser(userData);
-                setProfileStatus(statusData);
-                setResumeAnalysis(analysisData);
+
+                const [userRes, statusRes, analysisRes, profileRes, aptitudeRes, codingRes, appsRes, drivesRes] = results;
+
+                if (userRes.status === 'fulfilled') setUser(userRes.value);
+                if (statusRes.status === 'fulfilled') setProfileStatus(statusRes.value);
+                if (analysisRes.status === 'fulfilled') setResumeAnalysis(analysisRes.value);
+                if (profileRes.status === 'fulfilled') {
+                    setProfile(profileRes.value);
+                    const clamp = (value: number) => Math.max(0, Math.min(100, Math.round(value || 0)));
+                    const aptitude = clamp(profileRes.value.aptitude_score);
+                    const interview = clamp(profileRes.value.interview_score);
+                    const coding = clamp(profileRes.value.coding_score);
+                    const storedOverall = clamp(profileRes.value.overall_readiness);
+                    const derivedOverall = clamp((aptitude + interview + coding) / 3);
+                    setScores({
+                        aptitude,
+                        interview,
+                        coding,
+                        overall: storedOverall > 0 ? storedOverall : derivedOverall,
+                    });
+                }
+                if (aptitudeRes.status === 'fulfilled') setAptitudeStats(aptitudeRes.value);
+                if (codingRes.status === 'fulfilled') setCodingStats(codingRes.value);
+                if (appsRes.status === 'fulfilled' && drivesRes.status === 'fulfilled') {
+                    const applied = appsRes.value?.length || 0;
+                    const total = drivesRes.value?.total || 0;
+                    setApplicationStats({ applied, total });
+                }
             } catch (error) {
                 console.error('Failed to fetch data:', error);
             } finally {
@@ -157,7 +210,7 @@ export default function StudentDashboard() {
                                     stroke="url(#gradient)"
                                     strokeWidth="8"
                                     strokeLinecap="round"
-                                    strokeDasharray={`${scores.overall * 2.51} 251`}
+                                    strokeDasharray={`${displayedOverall * 2.51} 251`}
                                     transform="rotate(-90 50 50)"
                                 />
                                 <defs>
@@ -168,12 +221,12 @@ export default function StudentDashboard() {
                                 </defs>
                             </svg>
                             <div className="absolute inset-0 flex items-center justify-center">
-                                <span className="text-2xl font-bold font-mono text-gradient">{scores.overall}%</span>
+                                <span className="text-2xl font-bold font-mono text-gradient">{displayedOverall}%</span>
                             </div>
                         </div>
                         <div className="text-sm">
                             <p className="text-slate-400 font-medium">
-                                {scores.overall === 0 ? 'Start practicing to see progress' : scores.overall >= 70 ? '✓ Ready for placements' : '↗ Keep practicing'}
+                                {displayedOverall === 0 ? 'Start practicing to see progress' : displayedOverall >= 70 ? '✓ Ready for placements' : '↗ Keep practicing'}
                             </p>
                             <p className="text-slate-500">Target: 70%</p>
                         </div>
@@ -258,19 +311,47 @@ export default function StudentDashboard() {
 
             {/* Score Cards Grid */}
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-                <ScoreCard title="Aptitude" score={scores.aptitude} icon={Brain} color="blue" href="/dashboard/student/aptitude" />
-                <ScoreCard title="Interview" score={scores.interview} icon={Microphone} color="purple" href="/dashboard/student/interview" />
-                <ScoreCard title="Coding" score={scores.coding} icon={Code} color="green" href="/dashboard/student/coding" />
-                <ScoreCard title="Applications" score={0} icon={Buildings} color="orange" href="/dashboard/student/placements" />
+                <ScoreCard title="Aptitude" score={displayedScores.aptitude} icon={Brain} color="blue" href="/dashboard/student/aptitude" />
+                <ScoreCard title="Interview" score={displayedScores.interview} icon={Microphone} color="purple" href="/dashboard/student/interview" />
+                <ScoreCard title="Coding" score={displayedScores.coding} icon={Code} color="green" href="/dashboard/student/coding" />
+                <ScoreCard
+                    title="Applications"
+                    score={applicationsProgress}
+                    displayValue={applicationsLabel}
+                    progress={applicationsProgress}
+                    icon={Buildings}
+                    color="orange"
+                    href="/dashboard/student/drives"
+                />
             </div>
 
             {/* Stats Row - Empty State */}
             <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
                 {[
-                    { icon: Target, label: 'Tests Taken', value: 0, subtext: 'This month' },
-                    { icon: Trophy, label: 'Best Score', value: '-', subtext: 'No tests yet' },
-                    { icon: Clock, label: 'Practice Time', value: '0h', subtext: 'This week' },
-                    { icon: ChartLineUp, label: 'Improvement', value: '-', subtext: 'No data yet' },
+                    {
+                        icon: Target,
+                        label: 'Tests Taken',
+                        value: aptitudeStats ? aptitudeStats.total_attempts : 0,
+                        subtext: 'Total attempts',
+                    },
+                    {
+                        icon: Trophy,
+                        label: 'Best Score',
+                        value: aptitudeStats ? `${Math.round(aptitudeStats.best_score)}%` : '-',
+                        subtext: aptitudeStats ? 'Aptitude best' : 'No tests yet',
+                    },
+                    {
+                        icon: Clock,
+                        label: 'Practice Time',
+                        value: '0h',
+                        subtext: 'Tracking soon',
+                    },
+                    {
+                        icon: ChartLineUp,
+                        label: 'Improvement',
+                        value: aptitudeStats ? `${Math.round(aptitudeStats.average_score)}%` : '-',
+                        subtext: aptitudeStats ? 'Avg score' : 'No data yet',
+                    },
                 ].map((stat, i) => (
                     <div key={i} className="card btn-ripple" onClick={() => hapticImpact()}>
                         <div className="flex items-center gap-3">
@@ -300,7 +381,7 @@ export default function StudentDashboard() {
                     <button onClick={() => { hapticImpact(); router.push('/dashboard/student/coding'); }} className="btn-secondary flex items-center justify-center gap-2 btn-ripple">
                         <Code size={18} /> Coding Practice
                     </button>
-                    <button onClick={() => { hapticImpact(); router.push('/dashboard/student/placements'); }} className="btn-secondary flex items-center justify-center gap-2 btn-ripple">
+                    <button onClick={() => { hapticImpact(); router.push('/dashboard/student/drives'); }} className="btn-secondary flex items-center justify-center gap-2 btn-ripple">
                         <Buildings size={18} /> View Drives
                     </button>
                 </div>
