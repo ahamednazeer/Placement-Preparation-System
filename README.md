@@ -110,7 +110,7 @@ A comprehensive platform for placement preparation with AI-powered mock intervie
    
    # Build Debug APK
    ./gradlew assembleDebug
-   # Output: frontend/android/app/build/outputs/apk/debug/app-debug.apk
+   # Output: frontend/android/app/build/outputs/apk/debug/app-debug.apk 
    
    # Build Release APK (requires signing config)
    ./gradlew assembleRelease
