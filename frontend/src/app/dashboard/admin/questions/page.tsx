@@ -39,6 +39,8 @@ export default function AdminQuestionApprovalsPage() {
     const [questions, setQuestions] = useState<AptitudeQuestion[]>([]);
     const [total, setTotal] = useState(0);
     const [page, setPage] = useState(1);
+    const [selectedIds, setSelectedIds] = useState<string[]>([]);
+    const [bulkLoading, setBulkLoading] = useState(false);
 
     const [categoryFilter, setCategoryFilter] = useState('');
     const [difficultyFilter, setDifficultyFilter] = useState('');
@@ -127,6 +129,54 @@ export default function AdminQuestionApprovalsPage() {
             toast.error(error?.message || 'Failed to reject question');
         } finally {
             setActionLoading(null);
+        }
+    };
+
+    const toggleSelect = (id: string) => {
+        setSelectedIds(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]);
+    };
+
+    const isAllSelected = questions.length > 0 && questions.every(q => selectedIds.includes(q.id));
+
+    const toggleSelectAll = () => {
+        if (isAllSelected) {
+            setSelectedIds(prev => prev.filter(id => !questions.some(q => q.id === id)));
+        } else {
+            const ids = questions.map(q => q.id);
+            setSelectedIds(prev => Array.from(new Set([...prev, ...ids])));
+        }
+    };
+
+    const handleBulkApprove = async () => {
+        if (selectedIds.length === 0) return;
+        const pendingIds = selectedIds.filter(id => {
+            const q = questions.find(item => item.id === id);
+            return q && q.approval_status === 'PENDING';
+        });
+        if (pendingIds.length === 0) {
+            toast.error('Only PENDING questions can be approved.');
+            return;
+        }
+        hapticImpact();
+        if (!confirm(`Approve ${pendingIds.length} questions?`)) return;
+        setBulkLoading(true);
+        try {
+            const results = await Promise.allSettled(pendingIds.map(id => api.approveQuestion(id)));
+            const failed = results.filter(r => r.status === 'rejected').length;
+            if (failed > 0) {
+                toast.error(`${failed} approvals failed`);
+            } else {
+                toast.success('Questions approved');
+            }
+            if (pendingIds.length !== selectedIds.length) {
+                toast.success(`${selectedIds.length - pendingIds.length} questions skipped (not pending).`);
+            }
+            setSelectedIds([]);
+            fetchQuestions();
+        } catch (error: any) {
+            toast.error(error?.message || 'Bulk approve failed');
+        } finally {
+            setBulkLoading(false);
         }
     };
 
@@ -316,6 +366,43 @@ export default function AdminQuestionApprovalsPage() {
                 </select>
             </div>
 
+            {selectedIds.length > 0 && (
+                <div className="card flex items-center justify-between">
+                    <div className="text-xs text-slate-400">
+                        {selectedIds.length} selected
+                    </div>
+                    <div className="flex gap-2">
+                        <button
+                            onClick={handleBulkApprove}
+                            disabled={bulkLoading}
+                            className="btn-primary h-9 px-3 flex items-center gap-2"
+                        >
+                            {bulkLoading ? <CircleNotch size={14} className="animate-spin" /> : <CheckCircle size={14} />}
+                            Approve Selected
+                        </button>
+                        <button
+                            onClick={() => setSelectedIds([])}
+                            className="btn-secondary h-9 px-3"
+                        >
+                            Clear
+                        </button>
+                    </div>
+                </div>
+            )}
+
+            <div className="flex items-center justify-between text-xs text-slate-500 px-1">
+                <label className="flex items-center gap-2">
+                    <input
+                        type="checkbox"
+                        className="accent-blue-500"
+                        checked={isAllSelected}
+                        onChange={toggleSelectAll}
+                    />
+                    Select all (page)
+                </label>
+                <span>Total selected: {selectedIds.length}</span>
+            </div>
+
             <div className="space-y-3">
                 {questions.length === 0 ? (
                     <div className="card text-center py-12">
@@ -326,7 +413,14 @@ export default function AdminQuestionApprovalsPage() {
                     questions.map((q) => (
                         <div key={q.id} className="card">
                             <div className="flex items-start justify-between gap-3">
-                                <div className="flex-1 min-w-0">
+                                <div className="flex-1 min-w-0 flex gap-3">
+                                    <input
+                                        type="checkbox"
+                                        className="mt-1 accent-blue-500"
+                                        checked={selectedIds.includes(q.id)}
+                                        onChange={() => toggleSelect(q.id)}
+                                    />
+                                    <div className="flex-1 min-w-0">
                                     <p className="text-sm font-medium line-clamp-2">{q.question_text}</p>
                                     <div className="flex items-center gap-2 mt-2 flex-wrap">
                                         <span className="text-xs px-2 py-0.5 bg-slate-700 rounded-sm">{q.category.replace('_', ' ')}</span>
@@ -348,6 +442,7 @@ export default function AdminQuestionApprovalsPage() {
                                         {q.time_limit_seconds && (
                                             <span className="text-xs px-2 py-0.5 bg-slate-800 text-slate-300 rounded-sm">{q.time_limit_seconds}s</span>
                                         )}
+                                    </div>
                                     </div>
                                 </div>
                                 <div className="flex gap-1">

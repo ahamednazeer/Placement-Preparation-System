@@ -18,6 +18,7 @@ import {
     ChartPie,
     PaperPlaneTilt,
     Lightning,
+    ArrowsCounterClockwise,
 } from '@phosphor-icons/react';
 import {
     api,
@@ -150,6 +151,17 @@ export default function AptitudeManagementPage() {
     useEffect(() => {
         fetchQuestions();
         fetchStats();
+    }, [fetchQuestions, fetchStats]);
+
+    useEffect(() => {
+        const handleFocus = () => {
+            fetchQuestions();
+            fetchStats();
+        };
+        window.addEventListener('focus', handleFocus);
+        return () => {
+            window.removeEventListener('focus', handleFocus);
+        };
     }, [fetchQuestions, fetchStats]);
 
     const resetForm = () => {
@@ -321,11 +333,15 @@ export default function AptitudeManagementPage() {
             fetchQuestions();
             fetchStats();
         } catch (error: any) {
-            toast.error('Failed to delete');
+            toast.error(error?.message || 'Failed to delete');
         }
     };
 
     const handleSendForApproval = async (q: AptitudeQuestion) => {
+        if (q.approval_status && q.approval_status !== 'DRAFT') {
+            toast.error('This question is already pending or approved.');
+            return;
+        }
         if (q.status === 'ARCHIVED') {
             toast.error('Unarchive the question before sending for approval.');
             return;
@@ -366,18 +382,29 @@ export default function AptitudeManagementPage() {
 
     const handleBulkActivate = async () => {
         if (selectedIds.length === 0) return;
+        const draftIds = selectedIds.filter(id => {
+            const q = questions.find(item => item.id === id);
+            return q && q.approval_status === 'DRAFT' && q.status !== 'ARCHIVED';
+        });
+        if (draftIds.length === 0) {
+            toast.error('Only DRAFT questions can be sent for approval.');
+            return;
+        }
         hapticImpact();
-        if (!confirm(`Set ${selectedIds.length} questions to ACTIVE?`)) return;
+        if (!confirm(`Send ${draftIds.length} questions for approval?`)) return;
         setBulkLoading(true);
         try {
             const results = await Promise.allSettled(
-                selectedIds.map(id => api.updateQuestion(id, { status: 'ACTIVE' }))
+                draftIds.map(id => api.updateQuestion(id, { status: 'ACTIVE' }))
             );
             const failed = results.filter(r => r.status === 'rejected').length;
             if (failed > 0) {
                 toast.error(`${failed} updates failed`);
             } else {
                 toast.success('Sent for approval. Status set to DRAFT/PENDING until admin approves.');
+            }
+            if (draftIds.length !== selectedIds.length) {
+                toast.success(`${selectedIds.length - draftIds.length} questions skipped (already pending/approved).`);
             }
             if (statusFilter === 'ACTIVE') {
                 setStatusFilter('');
@@ -491,6 +518,13 @@ export default function AptitudeManagementPage() {
                         </div>
                     </div>
                     <div className="flex gap-2">
+                        <button
+                            onClick={() => { hapticImpact(); fetchQuestions(); fetchStats(); }}
+                            className="btn-secondary h-10 px-3 flex items-center gap-1"
+                            title="Refresh list"
+                        >
+                            <ArrowsCounterClockwise size={16} /> Refresh
+                        </button>
                         <button onClick={openAuditLogs} className="btn-secondary h-10 px-3 flex items-center gap-1">
                             <ChartPie size={16} /> Audit
                         </button>
@@ -619,14 +653,14 @@ export default function AptitudeManagementPage() {
                                         <div className="flex items-center gap-2 mt-2 flex-wrap">
                                             <span className="text-xs px-2 py-0.5 bg-slate-700 rounded-sm">{q.category.replace('_', ' ')}</span>
                                             <span className={`text-xs px-2 py-0.5 rounded-sm ${getDifficultyStyle(q.difficulty)}`}>{q.difficulty}</span>
-                                            {q.approval_status && (
+                                            {q.approval_status && q.status !== 'ARCHIVED' && (
                                                 <span className={`text-xs px-2 py-0.5 rounded-sm ${getApprovalStyle(q.approval_status)}`}>
                                                     {q.approval_status}
                                                 </span>
                                             )}
                                         {q.status && (
                                             <span className="text-xs px-2 py-0.5 bg-blue-500/20 text-blue-300 rounded-sm">
-                                                {q.approval_status === 'PENDING' ? 'APPROVAL PENDING' : q.status}
+                                                {q.status === 'ARCHIVED' ? 'ARCHIVED' : (q.approval_status === 'PENDING' ? 'APPROVAL PENDING' : q.status)}
                                             </span>
                                         )}
                                             {q.sub_topic && (

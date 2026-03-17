@@ -12,6 +12,7 @@ import {
     MapPin,
     CurrencyInr,
     Calendar,
+    Clock,
     Users,
     Eye,
     Check,
@@ -25,8 +26,8 @@ import Portal from '@/components/Portal';
 import { toast } from 'sonner';
 
 const STATUSES = [
-    { value: 'UPCOMING', label: 'Upcoming', color: 'text-blue-400 bg-blue-500/20' },
-    { value: 'ONGOING', label: 'Ongoing', color: 'text-green-400 bg-green-500/20' },
+    { value: 'UPCOMING', label: 'Registration Open', color: 'text-blue-400 bg-blue-500/20' },
+    { value: 'ONGOING', label: 'Registration Closed', color: 'text-amber-400 bg-amber-500/20' },
     { value: 'COMPLETED', label: 'Completed', color: 'text-slate-400 bg-slate-500/20' },
     { value: 'CANCELLED', label: 'Cancelled', color: 'text-red-400 bg-red-500/20' },
 ];
@@ -50,6 +51,18 @@ export default function DrivesManagementPage() {
     const [applicants, setApplicants] = useState<Applicant[]>([]);
     const [loadingApplicants, setLoadingApplicants] = useState(false);
     const [exporting, setExporting] = useState(false);
+
+    const formatDateTime = (value: string) => {
+        const date = new Date(value);
+        if (Number.isNaN(date.getTime())) return value;
+        return date.toLocaleString(undefined, {
+            year: 'numeric',
+            month: '2-digit',
+            day: '2-digit',
+            hour: '2-digit',
+            minute: '2-digit',
+        });
+    };
 
     const [formData, setFormData] = useState({
         company_name: '',
@@ -140,6 +153,18 @@ export default function DrivesManagementPage() {
         setShowModal(true);
     };
 
+    const toLocalInputValue = (value?: string | null) => {
+        if (!value) return '';
+        const hasTimezone = /Z$|[+-]\d{2}:\d{2}$/.test(value);
+        if (!hasTimezone) {
+            return value.slice(0, 16);
+        }
+        const parsed = new Date(value);
+        if (Number.isNaN(parsed.getTime())) return '';
+        const tzOffsetMs = parsed.getTimezoneOffset() * 60000;
+        return new Date(parsed.getTime() - tzOffsetMs).toISOString().slice(0, 16);
+    };
+
     const openEdit = (drive: PlacementDrive) => {
         hapticImpact();
         setEditingDrive(drive);
@@ -147,8 +172,8 @@ export default function DrivesManagementPage() {
             company_name: drive.company_name,
             job_title: drive.job_title,
             job_description: drive.job_description,
-            registration_deadline: drive.registration_deadline.slice(0, 16),
-            drive_date: drive.drive_date.slice(0, 16),
+            registration_deadline: toLocalInputValue(drive.registration_deadline),
+            drive_date: toLocalInputValue(drive.drive_date),
             min_cgpa: drive.min_cgpa?.toString() || '',
             package_lpa: drive.package_lpa?.toString() || '',
             location: drive.location || '',
@@ -223,14 +248,12 @@ export default function DrivesManagementPage() {
         }
         setSaving(true);
         try {
-            const regDate = new Date(formData.registration_deadline);
-            const driveDate = new Date(formData.drive_date);
             const data = {
                 company_name: formData.company_name,
                 job_title: formData.job_title,
                 job_description: formData.job_description,
-                registration_deadline: regDate.toISOString(),
-                drive_date: driveDate.toISOString(),
+                registration_deadline: formData.registration_deadline,
+                drive_date: formData.drive_date,
                 min_cgpa: formData.min_cgpa ? parseFloat(formData.min_cgpa) : undefined,
                 package_lpa: formData.package_lpa ? parseFloat(formData.package_lpa) : undefined,
                 location: formData.location || undefined,
@@ -347,6 +370,10 @@ export default function DrivesManagementPage() {
         const s = STATUSES.find(x => x.value === st);
         return s?.color || 'text-slate-400 bg-slate-500/20';
     };
+    const getStatusLabel = (st: string) => {
+        const s = STATUSES.find(x => x.value === st);
+        return s?.label || st;
+    };
 
     if (loading) {
         return (
@@ -414,7 +441,7 @@ export default function DrivesManagementPage() {
                                 <div className="flex-1 min-w-0">
                                     <div className="flex items-center gap-2 mb-1">
                                         <h3 className="font-bold truncate">{drive.company_name}</h3>
-                                        <span className={`text-xs px-2 py-0.5 rounded-sm ${getStatusStyle(drive.status)}`}>{drive.status}</span>
+                                        <span className={`text-xs px-2 py-0.5 rounded-sm ${getStatusStyle(drive.status)}`}>{getStatusLabel(drive.status)}</span>
                                     </div>
                                     <p className="text-sm text-slate-400">{drive.job_title}</p>
                                     <div className="flex items-center gap-3 mt-2 text-xs text-slate-500">
@@ -422,10 +449,16 @@ export default function DrivesManagementPage() {
                                         {drive.location && <span className="flex items-center gap-1"><MapPin size={12} />{drive.location}</span>}
                                         <span className="flex items-center gap-1"><Users size={12} />{drive.application_count} apps</span>
                                     </div>
-                                    <p className="text-xs text-slate-600 mt-1">
-                                        <Calendar size={10} className="inline mr-1" />
-                                        Drive: {new Date(drive.drive_date).toLocaleDateString()}
-                                    </p>
+                                    <div className="text-xs text-slate-600 mt-1 space-y-0.5">
+                                        <div>
+                                            <Clock size={10} className="inline mr-1" />
+                                            Deadline: {formatDateTime(drive.registration_deadline)}
+                                        </div>
+                                        <div>
+                                            <Calendar size={10} className="inline mr-1" />
+                                            Drive: {formatDateTime(drive.drive_date)}
+                                        </div>
+                                    </div>
                                 </div>
                                 <div className="flex flex-col gap-1">
                                     <button onClick={() => viewApplicants(drive)} className="w-9 h-9 bg-blue-500/20 text-blue-400 rounded-sm flex items-center justify-center active:scale-95">

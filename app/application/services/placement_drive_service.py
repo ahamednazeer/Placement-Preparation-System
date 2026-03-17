@@ -11,7 +11,6 @@ from app.infrastructure.repositories.drive_application_repo_impl import DriveApp
 from app.infrastructure.repositories.profile_repo_impl import ProfileRepositoryImpl
 from app.infrastructure.database.models import PlacementDrive, DriveApplication, StudentProfile
 from app.core.constants import PlacementDriveStatus, ApplicationStatus
-from app.utils.helpers import to_naive_utc
 
 
 class PlacementDriveService:
@@ -34,10 +33,6 @@ class PlacementDriveService:
         **kwargs
     ) -> PlacementDrive:
         """Create a new placement drive."""
-        # Normalize to naive UTC to satisfy asyncpg/Postgres
-        registration_deadline = to_naive_utc(registration_deadline)
-        drive_date = to_naive_utc(drive_date)
-
         if registration_deadline >= drive_date:
             raise ValueError("Registration deadline must be before drive date")
         
@@ -67,11 +62,19 @@ class PlacementDriveService:
         drives = await self.drive_repo.list_drives(status=st, limit=page_size, offset=offset)
         total = await self.drive_repo.count_drives(status=st)
         # Auto-complete drives past their drive date
-        now = datetime.utcnow()
+        now = datetime.now()
         updated = False
         for drive in drives:
-            if drive.status in [PlacementDriveStatus.UPCOMING, PlacementDriveStatus.ONGOING] and drive.drive_date < now:
-                drive.status = PlacementDriveStatus.COMPLETED
+            if drive.status == PlacementDriveStatus.CANCELLED:
+                continue
+            if drive.drive_date <= now:
+                new_status = PlacementDriveStatus.COMPLETED
+            elif drive.registration_deadline <= now:
+                new_status = PlacementDriveStatus.ONGOING
+            else:
+                new_status = PlacementDriveStatus.UPCOMING
+            if drive.status != new_status:
+                drive.status = new_status
                 updated = True
         if updated:
             await self.db.commit()
@@ -90,14 +93,6 @@ class PlacementDriveService:
         # Validate dates if being updated
         reg_dl = kwargs.get('registration_deadline', drive.registration_deadline)
         d_date = kwargs.get('drive_date', drive.drive_date)
-        
-        # Normalize to naive UTC
-        if 'registration_deadline' in kwargs:
-            kwargs['registration_deadline'] = to_naive_utc(kwargs['registration_deadline'])
-            reg_dl = kwargs['registration_deadline']
-        if 'drive_date' in kwargs:
-            kwargs['drive_date'] = to_naive_utc(kwargs['drive_date'])
-            d_date = kwargs['drive_date']
         
         if reg_dl >= d_date:
             raise ValueError("Registration deadline must be before drive date")
@@ -150,7 +145,7 @@ class PlacementDriveService:
             raise ValueError("Drive not found")
         
         # Check registration deadline
-        if datetime.utcnow() > drive.registration_deadline:
+        if datetime.now() > drive.registration_deadline:
             raise ValueError("Registration deadline has passed")
         
         # Check eligibility using student profile
