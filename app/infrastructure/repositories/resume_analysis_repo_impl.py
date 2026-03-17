@@ -56,5 +56,6 @@ class ResumeAnalysisRepositoryImpl:
             select(ResumeAnalysis)
             .where(ResumeAnalysis.student_id == student_id)
             .order_by(ResumeAnalysis.analyzed_at.desc())
+            .limit(1)
         )
-        return result.scalar_one_or_none()
+        return result.scalars().first()
