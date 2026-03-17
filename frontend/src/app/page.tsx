@@ -119,8 +119,8 @@ export default function LoginPage() {
           <div className="mt-6 p-3 bg-slate-950/50 border border-slate-800 rounded-lg">
             <p className="text-xs text-slate-500 uppercase tracking-wider mb-2">Demo:</p>
             <div className="space-y-1 text-xs text-slate-400">
-              <div>student@placementprep.com</div>
-              <div className="text-slate-500">Password: Student@123</div>
+              <div>test1@gmail.com</div>
+              <div className="text-slate-500">Password: Test@123</div>
             </div>
           </div>
         </div>

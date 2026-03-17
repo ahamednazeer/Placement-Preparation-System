@@ -36,8 +36,8 @@ async def seed_database():
             "role": UserRole.PLACEMENT_OFFICER,
         },
         {
-            "email": "student@placementprep.com",
-            "password": "Student@123",
+            "email": "test1@gmail.com",
+            "password": "Test@123",
             "first_name": "Demo",
             "last_name": "Student",
             "role": UserRole.STUDENT,
@@ -81,7 +81,7 @@ async def seed_database():
     print("\n📋 Demo Accounts:")
     print("   Admin: admin@placementprep.com / Admin@123")
     print("   Officer: officer@placementprep.com / Officer@123")
-    print("   Student: student@placementprep.com / Student@123")
+    print("   Student: test1@gmail.com / Test@123")
     print("\n🚀 Database seeded successfully!")
 
 
